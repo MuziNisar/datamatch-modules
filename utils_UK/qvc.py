@@ -1,6 +1,7 @@
 
 # # qvc_oxylabs.py
 # # Python 3.9+
+# # Version: 2.0 - Fixed stock detection to prioritize Add to Cart button
 # # pip install requests beautifulsoup4 lxml pillow
 
 # from __future__ import annotations
@@ -15,11 +16,13 @@
 # from bs4 import BeautifulSoup
 # from PIL import Image
 
+# __version__ = "2.0"
+
 # # ---------------------------
 # # Credentials (prefer .py, else env)
 # # ---------------------------
 # try:
-#     from oxylabs_secrets import OXY_USER, OXY_PASS  # define in your project
+#     from oxylabs_secrets import OXY_USER, OXY_PASS
 # except Exception:
 #     OXY_USER = os.getenv("OXY_USER") or os.getenv("OXYLABS_USERNAME", "")
 #     OXY_PASS = os.getenv("OXY_PASS") or os.getenv("OXYLABS_PASSWORD", "")
@@ -136,13 +139,11 @@
 # def _ensure_jpg_on_scene7(u: str) -> str:
 #     """
 #     For QVC Scene7 (qvc.scene7.com), add fmt=jpg to force JPEG.
-#     Keeps existing query (like ?$aempdlarge80$) and appends &fmt=jpg.
 #     """
 #     try:
 #         p = urlparse(u)
 #         if "scene7.com" not in p.netloc:
 #             return u
-#         # Keep existing query and append fmt=jpg if not present
 #         q = p.query or ""
 #         if "fmt=jpg" not in q.lower():
 #             sep = "&" if q else ""
@@ -206,42 +207,68 @@
 #     # PRICE & STOCK
 #     price = "N/A"
 #     in_stock: Optional[bool] = None
+#     stock_text = ""
 
-#     # Not available banner → out of stock
-#     sold_out = soup.select_one("p.status.allSoldOut, .status.allSoldOut")
-#     if sold_out and "not available" in sold_out.get_text(" ", strip=True).lower():
-#         in_stock = False
-#         price = "N/A"  # no price shown when fully unavailable
-
-#     # Otherwise try price block
-#     if price == "N/A":
-#         price_el = soup.select_one("span.pdpPrice.price")
-#         if price_el:
-#             dq = price_el.get("data-qvc-price", "").strip()
-#             if dq:
-#                 price = f"£{dq}"
-#             else:
-#                 txt = _clean_plain(price_el.get_text())
-#                 txt = re.sub(r"(?i)\bdeleted\b", "", txt).strip()
-#                 if txt:
-#                     price = txt
-
-#     # In-stock button or availability text
-#     if in_stock is None:
-#         btn = soup.select_one("#btnAddToCart")
-#         if btn:
+#     # ============================================================
+#     # Strategy 1 (HIGHEST PRIORITY): Check for Add to Cart button
+#     # ============================================================
+#     btn = soup.select_one("#btnAddToCart, .btnAddToCart, button[id='btnAddToCart']")
+#     if btn:
+#         btn_disabled = btn.has_attr("disabled") or btn.get("aria-disabled", "").lower() == "true"
+#         btn_text = _clean_plain(btn.get_text()).lower()
+        
+#         if btn_disabled:
+#             in_stock = False
+#             stock_text = "Add to Cart disabled"
+#         elif any(phrase in btn_text for phrase in ["add to basket", "add to cart", "add to bag"]):
 #             in_stock = True
+#             stock_text = "Add to Basket available"
 #         else:
-#             vis_txt = ""
-#             for el in soup.select(".buyBoxAvailibility .status"):
-#                 t = _clean_plain(el.get_text())
-#                 if t:
-#                     vis_txt = t; break
-#             if vis_txt:
-#                 if re.search(r"\bin\s*stock\b", vis_txt, re.I):
+#             # Button exists but unclear text - assume available
+#             in_stock = True
+#             stock_text = "Add to Cart button present"
+
+#     # ============================================================
+#     # Strategy 2: Check for sold out / not available banner
+#     # ============================================================
+#     if in_stock is None:
+#         sold_out = soup.select_one("p.status.allSoldOut, .status.allSoldOut, .allSoldOut")
+#         if sold_out:
+#             sold_text = sold_out.get_text(" ", strip=True).lower()
+#             if "not available" in sold_text or "sold out" in sold_text:
+#                 in_stock = False
+#                 stock_text = _clean_plain(sold_out.get_text()) or "Not available"
+#                 price = "N/A"
+
+#     # ============================================================
+#     # Strategy 3: Check availability status text
+#     # ============================================================
+#     if in_stock is None:
+#         for el in soup.select(".buyBoxAvailibility .status, .status"):
+#             t = _clean_plain(el.get_text()).lower()
+#             if t:
+#                 if re.search(r"\bin\s*stock\b", t, re.I):
 #                     in_stock = True
-#                 elif re.search(r"(sold\s*out|all\s*sold\s*out|waitlist|not available)", vis_txt, re.I):
+#                     stock_text = _clean_plain(el.get_text())
+#                     break
+#                 elif re.search(r"(sold\s*out|all\s*sold\s*out|waitlist|not available)", t, re.I):
 #                     in_stock = False
+#                     stock_text = _clean_plain(el.get_text())
+#                     break
+
+#     # ============================================================
+#     # Get price
+#     # ============================================================
+#     price_el = soup.select_one("span.pdpPrice.price")
+#     if price_el:
+#         dq = price_el.get("data-qvc-price", "").strip()
+#         if dq:
+#             price = f"£{dq}"
+#         else:
+#             txt = _clean_plain(price_el.get_text())
+#             txt = re.sub(r"(?i)\bdeleted\b", "", txt).strip()
+#             if txt:
+#                 price = txt
 
 #     # DESCRIPTION (short + long)
 #     desc_parts: List[str] = []
@@ -269,12 +296,15 @@
 #                 if isinstance(o, dict) and o.get("@type") == "Product":
 #                     cand = _strip_rating_boilerplate(_clean_plain(str(o.get("description", ""))), name)
 #                     if cand and len(cand) > 40:
-#                         desc_parts.append(cand); found = True; break
-#             if found: break
+#                         desc_parts.append(cand)
+#                         found = True
+#                         break
+#             if found:
+#                 break
 
 #     description = _strip_rating_boilerplate("\n\n".join([p for p in desc_parts if p.strip()]), name) or "N/A"
 
-#     # IMAGES — collect ALL thumbs in the list (your sample shows 8)
+#     # IMAGES — collect ALL thumbs in the list
 #     img_urls: List[str] = []
 #     for a in soup.select("#imageThumbnails .imageList a.thumbcell"):
 #         href = a.get("data-standard") or a.get("href") or ""
@@ -297,8 +327,9 @@
 #         "name": name or "N/A",
 #         "price": price or "N/A",
 #         "in_stock": in_stock,
+#         "stock_text": stock_text,
 #         "description": description or "N/A",
-#         "image_urls": ordered,  # all the thumbnails we found
+#         "image_urls": ordered,
 #     }
 
 # # ---------------------------
@@ -309,9 +340,7 @@
 #     return f"{p.scheme or 'https'}://{p.netloc}"
 
 # def _bytes_to_jpg_file(content: bytes, out_path: Path) -> None:
-#     """
-#     Convert arbitrary image bytes to a proper RGB JPEG on disk.
-#     """
+#     """Convert arbitrary image bytes to a proper RGB JPEG on disk."""
 #     with Image.open(io.BytesIO(content)) as im:
 #         if im.mode in ("RGBA", "LA", "P"):
 #             im = im.convert("RGB")
@@ -345,14 +374,11 @@
 #                 print(f"  ! empty content: {u}")
 #                 continue
 
-#             # If server already returns JPEG → write directly; else transcode to JPEG
 #             ct = (r.headers.get("Content-Type") or "").lower()
-#             out = folder / f"image_{i}.jpg"
+#             out = folder / f"{i:02d}.jpg"
 #             if "jpeg" in ct or "jpg" in ct:
 #                 with open(out, "wb") as f:
-#                     for chunk in r.iter_content(65536):
-#                         if chunk:
-#                             f.write(chunk)
+#                     f.write(content)
 #             else:
 #                 _bytes_to_jpg_file(content, out)
 
@@ -367,12 +393,22 @@
 # def scrape_qvc_product_with_oxylabs(url: str,
 #                                     download_images_flag: bool = True,
 #                                     max_images: Optional[int] = None,
-#                                     geo: str = "United Kingdom") -> Dict[str, Any]:
+#                                     geo: str = "United Kingdom",
+#                                     verbose: bool = False) -> Dict[str, Any]:
+#     if verbose:
+#         print(f"Fetching {url}...")
+    
 #     html = oxy_fetch_html(url, geo=geo)
 #     parsed = parse_qvc(html, page_url=url)
 
 #     safe = _safe_name(parsed["name"])
 #     folder = SAVE_DIR / safe
+    
+#     if verbose:
+#         print(f"  Name: {parsed['name']}")
+#         print(f"  Price: {parsed['price']}")
+#         print(f"  In Stock: {parsed['in_stock']}")
+#         print(f"  Stock Text: {parsed['stock_text']}")
 
 #     images_downloaded: List[str] = []
 #     if download_images_flag and parsed["image_urls"]:
@@ -382,6 +418,7 @@
 #         "name": parsed["name"],
 #         "price": parsed["price"],
 #         "in_stock": parsed["in_stock"],
+#         "stock_text": parsed["stock_text"],
 #         "description": parsed["description"],
 #         "image_count": len(images_downloaded) if images_downloaded else len(parsed["image_urls"]),
 #         "images": images_downloaded if images_downloaded else parsed["image_urls"],
@@ -390,22 +427,20 @@
 #         "mode": "oxylabs-universal",
 #     }
 
-# # ---------------------------
-# # CLI
-# # ---------------------------
-# if __name__ == "__main__":
-#     TEST_URL = "https://www.qvcuk.com/vq-halo-portable-bluetooth-speaker%2C-powerbank-%26-lantern.product.737161.html"
-#     data = scrape_qvc_product_with_oxylabs(TEST_URL, download_images_flag=True, max_images=None)
-#     print(json.dumps(data, indent=2, ensure_ascii=False))
-
-
+# # # ---------------------------
+# # # CLI
+# # # ---------------------------
+# # if __name__ == "__main__":
+# #     TEST_URL = "https://www.qvcuk.com/vq-halo-portable-bluetooth-speaker%2C-powerbank-%26-lantern.product.737161.html"
+# #     data = scrape_qvc_product_with_oxylabs(TEST_URL, download_images_flag=True, max_images=None, verbose=True)
+# #     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
 
 
 # qvc_oxylabs.py
 # Python 3.9+
-# Version: 2.0 - Fixed stock detection to prioritize Add to Cart button
+# Version: 2.1 - Added invalid link detection (404, error pages, listing pages)
 # pip install requests beautifulsoup4 lxml pillow
 
 from __future__ import annotations
@@ -420,7 +455,7 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from PIL import Image
 
-__version__ = "2.0"
+__version__ = "2.1"
 
 # ---------------------------
 # Credentials (prefer .py, else env)
@@ -591,10 +626,218 @@ def oxy_fetch_html(url: str, geo: str = "United Kingdom", timeout: int = 90) -> 
     raise RuntimeError(f"Oxylabs HTML fetch failed: {last}")
 
 # ---------------------------
+# Invalid Link Detection
+# ---------------------------
+def _extract_product_name(soup: BeautifulSoup, page_url: str = "") -> str:
+    """
+    Extract product name from page - works even on error/invalid pages.
+    Tries multiple sources: og:title, h1, title tag, URL.
+    """
+    # 1. Try og:title meta tag (most reliable)
+    og = soup.select_one("meta[property='og:title']")
+    if og and og.get("content"):
+        name = re.sub(r"\s*[-–|]\s*QVC.*$", "", og["content"]).strip()
+        if name and name.lower() not in ["qvc", "qvcuk", "oops!", "error", ""]:
+            return name
+    
+    # 2. Try page title
+    title = soup.select_one("title")
+    if title:
+        name = re.sub(r"\s*[-–|]\s*QVC.*$", "", title.get_text()).strip()
+        if name and name.lower() not in ["qvc", "qvcuk", "oops!", "error", ""]:
+            return name
+    
+    # 3. Try h1 (but skip error headers)
+    h1 = soup.select_one("h1")
+    if h1:
+        h1_text = _clean_plain(h1.get_text())
+        if h1_text.lower() not in ["oops!", "error", "page not found", ""]:
+            return h1_text
+    
+    # 4. Try product name specific selectors
+    for sel in [".productName", ".pdpProductName", "[data-product-name]"]:
+        el = soup.select_one(sel)
+        if el:
+            name = _clean_plain(el.get_text())
+            if name:
+                return name
+    
+    # 5. FALLBACK: Extract name from URL
+    # QVC URL pattern: /product-name-here.product.XXXXXX.html
+    if page_url:
+        try:
+            path = urlparse(page_url).path  # e.g., /outlet-cath-kidston-vq-monty-portable-dab-fm-bluetooth.product.740403.html
+            # Remove leading slash and .html
+            path = path.strip("/").replace(".html", "")
+            # Split by .product. and take the first part (the name slug)
+            if ".product." in path:
+                slug = path.split(".product.")[0]
+            else:
+                slug = path
+            # Convert slug to readable name: "outlet-cath-kidston-vq-monty" -> "Outlet Cath Kidston Vq Monty"
+            if slug:
+                name = slug.replace("-", " ").replace("_", " ").strip()
+                # Title case
+                name = " ".join(word.capitalize() for word in name.split())
+                if name:
+                    return name
+        except Exception:
+            pass
+    
+    return "N/A"
+
+
+def _detect_invalid_page(soup: BeautifulSoup, page_url: str) -> Tuple[bool, str, str]:
+    """
+    Detect if the page is invalid (404, error, listing page, etc.)
+    Returns: (is_invalid: bool, reason: str, extracted_name: str)
+    
+    Detection priority:
+    1. Error page elements (404, "Oops!", "can't find")
+    2. Generic error messages
+    3. Listing/category page detection
+    4. Missing essential PDP elements
+    
+    ALWAYS extracts product name even for invalid pages.
+    """
+    
+    # Extract name FIRST - we want this regardless of validity
+    extracted_name = _extract_product_name(soup, page_url)
+    
+    # ============================================================
+    # 1. QVC-specific error page: <section id="error" data-module-type="error">
+    # ============================================================
+    error_section = soup.select_one(
+        "section#error[data-module-type='error'], "
+        "section.qModule[data-module-type='error'], "
+        "section[data-module-feature-name='error']"
+    )
+    if error_section:
+        error_text = error_section.get_text(" ", strip=True).lower()
+        if any(phrase in error_text for phrase in [
+            "can't find", "cannot find", "doesn't exist", 
+            "no longer available", "page not found", "been moved", "been removed"
+        ]):
+            return True, "error_page:qvc_error_section", extracted_name
+    
+    # ============================================================
+    # 2. Check for "Oops!" h1 header (QVC's 404 indicator)
+    # ============================================================
+    h1 = soup.select_one("h1")
+    if h1:
+        h1_text = _clean_plain(h1.get_text()).lower()
+        if h1_text == "oops!" or "page not found" in h1_text:
+            # Verify with h2 or surrounding text
+            h2 = soup.select_one("h2")
+            if h2:
+                h2_text = h2.get_text().lower()
+                if any(phrase in h2_text for phrase in ["can't find", "cannot find", "doesn't exist"]):
+                    return True, "error_page:oops_404", extracted_name
+            # Even without h2 confirmation, "Oops!" as main header is suspicious
+            return True, "error_page:oops_header", extracted_name
+    
+    # ============================================================
+    # 3. Check for generic error text patterns in body
+    # ============================================================
+    body_text = soup.get_text(" ", strip=True).lower() if soup.body else ""
+    error_patterns = [
+        r"this page (has been|was) (removed|deleted)",
+        r"product (is )?no longer available",
+        r"item (is )?no longer available", 
+        r"we couldn'?t find (that|this) page",
+        r"sorry,?\s*(this|the) page (doesn'?t|does not) exist",
+        r"404\s*-?\s*(page)?\s*not found",
+    ]
+    for pattern in error_patterns:
+        if re.search(pattern, body_text):
+            return True, "error_page:pattern_match", extracted_name
+    
+    # ============================================================
+    # 4. Check if it's a listing/category page (not a PDP)
+    # ============================================================
+    # QVC product listing indicators
+    product_cards = soup.select(".productItem, .product-tile, .searchProduct, .plpProduct")
+    if len(product_cards) >= 4:
+        return True, f"listing_page:{len(product_cards)}_product_cards", extracted_name
+    
+    # Pagination with multiple pages suggests listing
+    pagination = soup.select(".pagination a, .paging a, .pageNumber")
+    if len(pagination) >= 3:
+        return True, f"listing_page:pagination_{len(pagination)}_pages", extracted_name
+    
+    # ============================================================
+    # 5. Check for essential PDP elements (positive validation)
+    # ============================================================
+    has_product_name = bool(soup.select_one("h1, meta[property='og:title']"))
+    has_price = bool(soup.select_one("span.pdpPrice, .price, [data-qvc-price]"))
+    has_add_to_cart = bool(soup.select_one("#btnAddToCart, .btnAddToCart, button[id='btnAddToCart']"))
+    has_product_images = bool(soup.select_one("#imageThumbnails, .productImage, .pdpImage"))
+    
+    # Check JSON-LD for Product schema
+    has_jsonld_product = False
+    for script in soup.select("script[type='application/ld+json']"):
+        try:
+            data = json.loads(script.text or "")
+            objs = data if isinstance(data, list) else [data]
+            for obj in objs:
+                if isinstance(obj, dict) and obj.get("@type") == "Product":
+                    has_jsonld_product = True
+                    break
+        except Exception:
+            continue
+    
+    # If JSON-LD Product exists, it's definitely a valid product page
+    if has_jsonld_product:
+        return False, "", extracted_name
+    
+    # If we have add-to-cart button, it's a valid PDP
+    if has_add_to_cart:
+        return False, "", extracted_name
+    
+    # If missing most PDP elements, likely invalid
+    pdp_score = sum([has_product_name, has_price, has_product_images])
+    if pdp_score < 2:
+        return True, f"missing_pdp_elements:score_{pdp_score}/3", extracted_name
+    
+    # ============================================================
+    # 6. URL-based validation (product ID in URL)
+    # ============================================================
+    # QVC URLs typically have pattern: /product-name.product.XXXXXX.html
+    url_lower = page_url.lower()
+    if ".product." not in url_lower and "/product/" not in url_lower:
+        # Check if it looks like a category or search page
+        if any(seg in url_lower for seg in ["/category/", "/search/", "/browse/", "/shop/"]):
+            return True, "url_pattern:category_or_search", extracted_name
+    
+    return False, "", extracted_name
+
+# ---------------------------
 # Parsing (QVC PDP)
 # ---------------------------
 def parse_qvc(html: str, page_url: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "lxml")
+
+    # ============================================================
+    # INVALID LINK DETECTION - CHECK FIRST
+    # ============================================================
+    is_invalid, invalid_reason, extracted_name = _detect_invalid_page(soup, page_url)
+    if is_invalid:
+        # Determine display name based on invalid reason
+        if "error_page" in invalid_reason or "oops" in invalid_reason:
+            display_name = "Invalid Link"
+        else:
+            display_name = "Product not available"
+        
+        return {
+            "name": display_name,
+            "price": "N/A",
+            "in_stock": False,
+            "stock_text": display_name,
+            "description": "N/A",
+            "image_urls": [],
+            "is_invalid": True,
+            "invalid_reason": invalid_reason,
+        }
 
     # NAME
     name = "N/A"
@@ -734,6 +977,8 @@ def parse_qvc(html: str, page_url: str) -> Dict[str, Any]:
         "stock_text": stock_text,
         "description": description or "N/A",
         "image_urls": ordered,
+        "is_invalid": False,
+        "invalid_reason": "",
     }
 
 # ---------------------------
@@ -805,6 +1050,27 @@ def scrape_qvc_product_with_oxylabs(url: str,
     html = oxy_fetch_html(url, geo=geo)
     parsed = parse_qvc(html, page_url=url)
 
+    # ============================================================
+    # Handle invalid link - return early
+    # ============================================================
+    if parsed.get("is_invalid"):
+        if verbose:
+            print(f"  ⚠ INVALID: {parsed['invalid_reason']}")
+        return {
+            "name": parsed["name"],  # Already has "Product Name - Invalid Link" suffix
+            "price": "N/A",
+            "in_stock": False,
+            "stock_text": parsed["stock_text"],
+            "description": "N/A",
+            "image_count": 0,
+            "images": [],
+            "folder": "",
+            "url": url,
+            "mode": "oxylabs-universal",
+            "is_invalid": True,
+            "invalid_reason": parsed["invalid_reason"],
+        }
+
     safe = _safe_name(parsed["name"])
     folder = SAVE_DIR / safe
     
@@ -829,12 +1095,32 @@ def scrape_qvc_product_with_oxylabs(url: str,
         "folder": str(folder),
         "url": url,
         "mode": "oxylabs-universal",
+        "is_invalid": False,
+        "invalid_reason": "",
     }
 
 # # ---------------------------
 # # CLI
 # # ---------------------------
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.qvcuk.com/vq-halo-portable-bluetooth-speaker%2C-powerbank-%26-lantern.product.737161.html"
-#     data = scrape_qvc_product_with_oxylabs(TEST_URL, download_images_flag=True, max_images=None, verbose=True)
-#     print(json.dumps(data, indent=2, ensure_ascii=False))
+#     import sys
+    
+#     # Test URLs
+#     TEST_URLS = [
+#         # Valid product
+#         "https://www.qvcuk.com/outlet-cath-kidston-vq-monty-portable-dab-fm-bluetooth.product.740403.html?sc=PSCH&sa=suggested&qq=mh&",
+       
+#     ]
+    
+#     if len(sys.argv) > 1:
+#         TEST_URLS = sys.argv[1:]
+    
+#     for test_url in TEST_URLS:
+#         print(f"\n{'='*60}")
+#         print(f"Testing: {test_url}")
+#         print('='*60)
+#         try:
+#             data = scrape_qvc_product_with_oxylabs(test_url, download_images_flag=False, verbose=True)
+#             print(json.dumps(data, indent=2, ensure_ascii=False))
+#         except Exception as e:
+#             print(f"ERROR: {e}")

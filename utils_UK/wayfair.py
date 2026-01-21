@@ -2,19 +2,19 @@
 # # wayfair.py
 # # Python 3.10+
 # # pip install requests bs4 lxml pillow
-# # Version: 2.0 - Fixed image deduplication
+# # Version: 3.0 - Added page validation for invalid/category URLs
 
 # from __future__ import annotations
 # import os, re, time, json, html as _html, hashlib, io
 # from pathlib import Path
 # from typing import Optional, Tuple, List, Dict
-# from urllib.parse import urldefrag
+# from urllib.parse import urldefrag, urlsplit
 
 # import requests
 # from bs4 import BeautifulSoup
 # from PIL import Image
 
-# __version__ = "2.0"
+# __version__ = "3.0"
 
 # # -----------------------------
 # # Credentials (env or local module)
@@ -45,6 +45,7 @@
 #     return Path(__file__).resolve().parent
 
 # SAVE_DIR = _root() / "data1"
+# DEBUG_DIR = _root() / "debug"
 
 # # -----------------------------
 # # Small helpers
@@ -153,6 +154,177 @@
 
 #     raise RuntimeError(f"Oxylabs HTML fetch failed: {last_exc}")
 
+
+# # -----------------------------
+# # Page Validation - DETECT INVALID PAGES
+# # -----------------------------
+# def _is_category_or_listing_page(soup: BeautifulSoup, url: str) -> bool:
+#     """
+#     Detect if the page is a category/listing/search page instead of a product detail page.
+#     Returns True if it's NOT a valid product page.
+#     """
+#     path = urlsplit(url).path.lower()
+    
+#     # Check 1: URL patterns for non-PDP pages
+#     # Category pages: /sb0/, /sb1/, ends with -cXXXXXX.html
+#     # PDP pages: /pdp/ in URL
+#     if "/sb0/" in path or "/sb1/" in path or "/sb2/" in path:
+#         return True
+#     if re.search(r"-c\d{5,}\.html$", path):  # Category URL pattern
+#         return True
+    
+#     # Check 2: Results count indicator (e.g., "1,234 Results")
+#     results_patterns = [
+#         r"\d[\d,]*\s*results?\b",
+#         r"showing\s+\d+\s*-\s*\d+\s+of\s+\d+",
+#         r"\d+\s+products?\s+found",
+#     ]
+#     page_text = soup.get_text(" ", strip=True).lower()
+#     for pattern in results_patterns:
+#         if re.search(pattern, page_text, re.I):
+#             return True
+    
+#     # Check 3: Product grid/listing containers
+#     listing_selectors = [
+#         "[data-test-id='ProductGrid']",
+#         "[data-test-id='SearchResults']",
+#         ".ProductGrid",
+#         "[class*='product-grid']",
+#         "[class*='search-results']",
+#         ".CategoryProductList",
+#     ]
+#     for sel in listing_selectors:
+#         if soup.select_one(sel):
+#             return True
+    
+#     # Check 4: Multiple product cards (>3 indicates listing)
+#     product_cards = soup.select("[data-test-id='ProductCard'], [class*='ProductCard']")
+#     if len(product_cards) > 3:
+#         return True
+    
+#     # Check 5: Filter/Sort UI elements (strong indicator of listing page)
+#     filter_indicators = [
+#         "[data-test-id='FilterSidebar']",
+#         "[data-test-id='SortDropdown']",
+#         "[class*='filter-sidebar']",
+#         "[class*='refinement']",
+#     ]
+#     filter_count = sum(1 for sel in filter_indicators if soup.select_one(sel))
+#     if filter_count >= 2:
+#         return True
+    
+#     return False
+
+
+# def _is_product_unavailable(soup: BeautifulSoup) -> Tuple[bool, Optional[str]]:
+#     """
+#     Detect if the product page shows the product as unavailable/discontinued.
+#     Returns (is_unavailable, reason)
+#     """
+#     # Check for specific unavailability messages in product area
+#     unavailable_selectors = [
+#         "[data-test-id='ProductUnavailable']",
+#         "[data-test-id='DiscontinuedMessage']",
+#         ".product-unavailable",
+#         ".discontinued-product",
+#     ]
+    
+#     for sel in unavailable_selectors:
+#         el = soup.select_one(sel)
+#         if el:
+#             text = _clean(el.get_text())
+#             if text:
+#                 return True, text
+    
+#     # Check for specific discontinuation messages in product containers
+#     product_containers = soup.select(
+#         "[data-test-id='ProductDetails'], .ProductDetails, main, #content"
+#     )
+    
+#     for container in product_containers:
+#         text = _clean(container.get_text()).lower()
+#         # Very specific patterns
+#         if re.search(r"this (product|item) (is|has been) (discontinued|no longer available)", text):
+#             return True, "Product is no longer available"
+#         if re.search(r"(product|item) no longer (exists|available|sold)", text):
+#             return True, "Product no longer exists"
+#         if re.search(r"we'?re sorry.{0,30}(discontinued|no longer)", text):
+#             return True, "Product has been discontinued"
+    
+#     # Check for 404-style page
+#     title = soup.title.string if soup.title else ""
+#     if re.search(r"page not found|404|not found", title, re.I):
+#         return True, "Page not found (404)"
+    
+#     # Check for error containers
+#     error_selectors = [".error-page", ".page-not-found", "[data-test-id='ErrorPage']"]
+#     for sel in error_selectors:
+#         if soup.select_one(sel):
+#             return True, "Error page detected"
+    
+#     return False, None
+
+
+# def _is_valid_pdp(soup: BeautifulSoup, url: str) -> Tuple[bool, str]:
+#     """
+#     Validate if the page is a legitimate Product Detail Page.
+#     Returns (is_valid, reason_if_invalid)
+#     """
+#     # Check if it's a category/listing page
+#     if _is_category_or_listing_page(soup, url):
+#         return False, "URL is a category/listing page, not a product page"
+    
+#     # Check if product is unavailable
+#     is_unavailable, unavailable_reason = _is_product_unavailable(soup)
+#     if is_unavailable:
+#         return False, unavailable_reason or "Product is no longer available"
+    
+#     # Check for essential PDP elements
+#     pdp_indicators = {
+#         "price_display": bool(soup.select_one("[data-test-id='PriceDisplay']")),
+#         "product_name": bool(soup.select_one("h1[data-rtl-id='listingHeaderNameHeading'], h1[data-test-id='ProductName']")),
+#         "media_carousel": bool(soup.select_one("[data-test-id='pdp-mt-thumbnails'], #MediaTrayCarouselWithThumbnailSidebar")),
+#         "add_to_cart": bool(soup.select_one("[data-test-id='AddToCartButton'], [class*='AddToCart']")),
+#         "product_details": bool(soup.select_one("[data-test-id='ProductDetails'], [class*='ProductDetails']")),
+#     }
+    
+#     indicator_count = sum(pdp_indicators.values())
+    
+#     # Need at least 2 PDP indicators for a valid page
+#     if indicator_count >= 2:
+#         return True, ""
+    
+#     # If URL looks like a PDP (/pdp/) but lacks elements, product may be removed
+#     if "/pdp/" in url.lower() and indicator_count == 0:
+#         return False, "Product page structure not found - product may have been removed"
+    
+#     # Accept with 1 indicator cautiously
+#     if indicator_count >= 1:
+#         return True, ""
+    
+#     return False, "Page does not contain expected product detail elements"
+
+
+# def _create_invalid_result(url: str, reason: str) -> Dict:
+#     """
+#     Create a result dict for invalid/unavailable products.
+#     """
+#     return {
+#         "name": f"INVALID LINK - {reason}",
+#         "price": None,
+#         "in_stock": None,
+#         "description": None,
+#         "image_count": 0,
+#         "image_urls": [],
+#         "images": [],
+#         "folder": None,
+#         "url": url,
+#         "mode": "invalid",
+#         "is_valid": False,
+#         "invalid_reason": reason,
+#     }
+
+
 # # -----------------------------
 # # JSON-LD helpers
 # # -----------------------------
@@ -224,16 +396,11 @@
 # def _img_dedup_key(u: str) -> str:
 #     """
 #     Extract the unique image identifier from Wayfair CDN URL.
-#     URLs look like: https://assets.wfcdn.com/im/18220115/resize-h48-w48.../2732/273284981/VQ+...
-#     The unique part is the image ID like '273284981'
 #     """
-#     # Try to extract the image ID (usually a 9-digit number before the filename)
-#     # Pattern: /2732/273284981/filename.jpg
 #     m = re.search(r"/(\d{8,10})/[^/]+\.(jpg|jpeg|png|webp)", u, re.I)
 #     if m:
-#         return m.group(1)  # Return just the image ID
+#         return m.group(1)
     
-#     # Fallback: remove resize segment and query string, normalize im/ segment
 #     u = re.sub(r"/resize-h\d+-w\d+(?:%5E|\^)compr-r\d+/", "/", u)
 #     u = re.sub(r"/im/\d+/", "/im/X/", u)
 #     return re.sub(r"[?].*$", "", u)
@@ -270,9 +437,12 @@
 #         if txt:
 #             return txt
 
-#     cand = soup.find(string=re.compile(r"£\s?\d[\d,]*\.?\d{0,2}"))
-#     if cand:
-#         return _clean(cand)
+#     # Look for price in product-specific containers only
+#     price_containers = soup.select("[data-test-id='ProductPrice'], .product-price, [class*='PriceBlock']")
+#     for container in price_containers:
+#         cand = container.find(string=re.compile(r"£\s?\d[\d,]*\.?\d{0,2}"))
+#         if cand:
+#             return _clean(cand)
 
 #     for data in _iter_jsonld(soup):
 #         for prod in _jsonld_find_products(data):
@@ -299,7 +469,11 @@
 #         "Not available",
 #         "Sold Out",
 #     ]
-#     page_text = soup.get_text(" ", strip=True)
+    
+#     # Check in product-specific areas, not entire page
+#     product_area = soup.select_one("[data-test-id='ProductDetails'], main, #content") or soup
+#     page_text = product_area.get_text(" ", strip=True)
+    
 #     for t in oos_texts:
 #         if re.search(rf"\b{re.escape(t)}\b", page_text, re.I):
 #             return False
@@ -373,14 +547,11 @@
 # def _parse_images(soup: BeautifulSoup) -> List[str]:
 #     """
 #     Extract unique product images from Wayfair PDP.
-#     Only use thumbnails section which has the definitive count (e.g., "1 of 4").
 #     """
 #     from typing import Tuple
 #     ordered: List[Tuple[int, str]] = []
 #     seen_ids: set[str] = set()
 
-#     # Primary source: thumbnails with aria-label showing position
-#     # These tell us exactly how many images there are (e.g., "1 of 4", "2 of 4", etc.)
 #     for btn in soup.select("[data-test-id='pdp-mt-thumbnails'] button[aria-label]"):
 #         lab = btn.get("aria-label") or ""
 #         m = re.search(r"(\d+)\s+of\s+(\d+)", lab, re.I)
@@ -392,14 +563,12 @@
 #         if not img:
 #             continue
             
-#         # Get src from srcset (prefer higher res) or src
 #         src = None
 #         srcset = img.get("srcset") or ""
 #         if srcset:
-#             # Parse srcset and get the URL (ignore resolution suffix)
 #             parts = [p.strip().split()[0] for p in srcset.split(",") if p.strip()]
 #             if parts:
-#                 src = parts[-1]  # Last one is usually higher res
+#                 src = parts[-1]
         
 #         if not src:
 #             src = img.get("src") or ""
@@ -407,7 +576,6 @@
 #         if not src:
 #             continue
         
-#         # Extract unique image ID for deduplication
 #         img_id = _img_dedup_key(src)
 #         if img_id in seen_ids:
 #             continue
@@ -415,7 +583,6 @@
         
 #         ordered.append((order, src))
 
-#     # Sort by order number and convert to high-res
 #     ordered.sort(key=lambda t: t[0])
     
 #     images: List[str] = []
@@ -423,7 +590,6 @@
 #         hu = _wf_to_hires(u, size=1600)
 #         images.append(hu)
     
-#     # If no thumbnails found, try carousel as fallback
 #     if not images:
 #         for img in soup.select("#MediaTrayCarouselWithThumbnailSidebar img, [data-test-id='pdp-mt-d-mainImageCarousel'] img"):
 #             src = img.get("src") or img.get("data-src") or ""
@@ -441,7 +607,6 @@
 # def _download_images_jpg(urls: List[str], referer: str, folder: Path, base_slug: str) -> List[str]:
 #     """
 #     Downloads all images and writes JPG only, with deterministic unique names.
-#     Converts WEBP/PNG → JPG using Pillow.
 #     """
 #     folder.mkdir(parents=True, exist_ok=True)
 #     out: List[str] = []
@@ -474,24 +639,58 @@
 # # -----------------------------
 # # Public API
 # # -----------------------------
-# def scrape_wayfair_product(url: str, save_dir: Path | None = None, *, geo="United Kingdom") -> dict:
+# def scrape_wayfair_product(url: str, save_dir: Path | None = None, *, geo="United Kingdom", verbose: bool = True) -> dict:
 #     """
 #     Fetch Wayfair PDP via Oxylabs and return parsed data + downloaded JPG images.
+#     Validates that the URL is a legitimate product page.
+#     Returns invalid result for category/listing pages or unavailable products.
 #     """
 #     if save_dir is None:
 #         save_dir = SAVE_DIR
 #     save_dir = Path(save_dir)
 #     save_dir.mkdir(parents=True, exist_ok=True)
+    
+#     # Ensure debug dir exists
+#     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 #     accept_lang = ACCEPT_LANG_GB
-#     html_doc, final_url = oxy_fetch_html(url, geo=geo, accept_lang=accept_lang, timeout=90)
+    
+#     try:
+#         html_doc, final_url = oxy_fetch_html(url, geo=geo, accept_lang=accept_lang, timeout=90)
+#     except Exception as e:
+#         if verbose:
+#             print(f"Failed to fetch URL: {e}")
+#         return _create_invalid_result(url, f"Failed to fetch page: {str(e)}")
 
 #     soup = BeautifulSoup(html_doc, "lxml")
+    
+#     # Save HTML for debugging if needed
+#     if verbose:
+#         debug_file = DEBUG_DIR / f"wayfair_debug_{_short_uid(url)}.html"
+#         try:
+#             debug_file.write_text(html_doc, encoding="utf-8")
+#             print(f"Debug HTML saved to: {debug_file}")
+#         except Exception:
+#             pass
+
+#     # ========== VALIDATION CHECK ==========
+#     is_valid, invalid_reason = _is_valid_pdp(soup, url)
+#     if not is_valid:
+#         if verbose:
+#             print(f"⚠ Invalid page detected: {invalid_reason}")
+#         return _create_invalid_result(url, invalid_reason)
+#     # ======================================
 
 #     name = _parse_name(soup)
 #     price = _parse_price(soup)
 #     in_stock = _parse_stock(soup)
 #     description = _parse_description(soup)
+
+#     # Post-extraction validation
+#     if name == "N/A" and price == "N/A" and description == "N/A":
+#         if verbose:
+#             print("⚠ Could not extract any product data")
+#         return _create_invalid_result(url, "Could not extract product information")
 
 #     name_slug = _safe_name(name)
 #     uid = _short_uid(final_url)
@@ -511,22 +710,35 @@
 #         "images": downloaded,
 #         "folder": str(folder),
 #         "url": final_url,
-#         "mode": "oxylabs(html)+direct(images_jpg_only)"
+#         "mode": "oxylabs(html)+direct(images_jpg_only)",
+#         "is_valid": True,
+#         "invalid_reason": None,
 #     }
 
-# # -----------------------------
-# # CLI test
-# # -----------------------------
-# if __name__ == "__main__":
-#     import sys
-#     test_url = (sys.argv[1] if len(sys.argv) > 1 else
-#                 "https://www.wayfair.co.uk/kitchenware-tableware/pdp/laura-ashley-vq-laura-ashley-jug-kettle-china-rose-laas1109.html")
-#     data = scrape_wayfair_product(test_url)
-#     print(json.dumps(data, indent=2, ensure_ascii=False))
-
-
-
-
+# # # -----------------------------
+# # # CLI test
+# # # -----------------------------
+# # if __name__ == "__main__":
+# #     import sys
+    
+# #     # Test URLs
+# #     TEST_URLS = [
+# #         # Category URL (should be invalid)
+# #         # "https://www.wayfair.co.uk/kitchenware-tableware/sb0/mixers-attachments-c1804929.html",
+# #         # Valid product URL
+# #         "https://www.wayfair.co.uk/kitchenware-tableware/pdp/laura-ashley-179637l-electric-tea-kettle-laas1112.html?piid=102385482",
+# #     ]
+    
+# #     # Allow passing URL as command line argument
+# #     if len(sys.argv) > 1:
+# #         TEST_URLS = [sys.argv[1]]
+    
+# #     for test_url in TEST_URLS:
+# #         print(f"\nTesting: {test_url}")
+# #         print("=" * 70)
+# #         data = scrape_wayfair_product(test_url, verbose=True)
+# #         print(json.dumps(data, indent=2, ensure_ascii=False))
+# #         print()
 
 
 
@@ -534,10 +746,10 @@
 # wayfair.py
 # Python 3.10+
 # pip install requests bs4 lxml pillow
-# Version: 3.0 - Added page validation for invalid/category URLs
+# Version: 3.1 - Fixed validation to not flag out-of-stock products as invalid
 
 from __future__ import annotations
-import os, re, time, json, html as _html, hashlib, io
+import os, re, time, json, html as _html, hashlib, io, random
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 from urllib.parse import urldefrag, urlsplit
@@ -546,7 +758,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 
-__version__ = "3.0"
+__version__ = "3.1"
 
 # -----------------------------
 # Credentials (env or local module)
@@ -585,19 +797,22 @@ DEBUG_DIR = _root() / "debug"
 def _clean(s: str | None) -> str:
     return re.sub(r"\s+", " ", _html.unescape(s or "")).strip()
 
+
 def _safe_name(s: str) -> str:
     n = re.sub(r"[^\w\s\-]", "", (s or "")).strip().replace(" ", "_")
-    return n or "NA"
+    return n[:100] or "NA"
+
 
 def _short_uid(s: str) -> str:
-    """8-char stable id from URL/content."""
     return hashlib.sha1((s or "").encode("utf-8")).hexdigest()[:8]
+
 
 def _looks_like_html(s: str) -> bool:
     if not s or len(s) < 300:
         return False
     ls = s.lower()
     return any(k in ls for k in ("<!doctype", "<head", "<body", "<div", "<meta", "<title", "wayfair"))
+
 
 def _session_with_retries() -> requests.Session:
     from urllib3.util.retry import Retry
@@ -615,6 +830,7 @@ def _session_with_retries() -> requests.Session:
     sess.mount("http://", HTTPAdapter(max_retries=retry))
     return sess
 
+
 def _oxylabs_query(payload: dict, timeout: int) -> dict:
     sess = _session_with_retries()
     r = sess.post(
@@ -626,9 +842,10 @@ def _oxylabs_query(payload: dict, timeout: int) -> dict:
     r.raise_for_status()
     return r.json()
 
-def oxy_fetch_html(url: str, *, geo="United Kingdom", accept_lang=ACCEPT_LANG_GB, timeout=90) -> tuple[str, str]:
+
+def oxy_fetch_html(url: str, *, geo="United Kingdom", accept_lang=ACCEPT_LANG_GB, timeout=90, verbose=False) -> tuple[str, str]:
     """
-    Robust Oxylabs HTML fetcher:
+    Robust Oxylabs HTML fetcher with retry logic.
     Returns (html, final_url).
     """
     url, _ = urldefrag(url)
@@ -643,13 +860,15 @@ def oxy_fetch_html(url: str, *, geo="United Kingdom", accept_lang=ACCEPT_LANG_GB
     attempts = [
         ("universal", "html"),
         ("web",       "html"),
-        ("browser",   "html"),
         ("universal", None),
-        ("web",       None),
     ]
 
     last_exc = None
+    consecutive_204 = 0
+    
     for source, render in attempts:
+        session_id = f"wayfair-{int(time.time())}-{random.randint(1000, 9999)}"
+        
         try:
             payload = {
                 "source": source,
@@ -657,14 +876,28 @@ def oxy_fetch_html(url: str, *, geo="United Kingdom", accept_lang=ACCEPT_LANG_GB
                 "geo_location": geo,
                 "headers": base_headers,
                 "user_agent_type": "desktop",
+                "context": [
+                    {"key": "session_id", "value": session_id}
+                ],
             }
             if render:
                 payload["render"] = render
+                payload["rendering_wait"] = 3000
+
+            if verbose:
+                print(f"  Trying source={source}, render={render}...")
 
             data = _oxylabs_query(payload, timeout=timeout)
             res = (data.get("results") or [{}])[0]
             content = res.get("content") or ""
             final_url = res.get("final_url") or res.get("url") or url
+
+            if not content:
+                consecutive_204 += 1
+                if consecutive_204 >= 3:
+                    raise RuntimeError("INVALID_PAGE:HTTP_204_REPEATED")
+                time.sleep(2)
+                continue
 
             if not _looks_like_html(content) and final_url and final_url != url:
                 payload2 = dict(payload)
@@ -673,22 +906,33 @@ def oxy_fetch_html(url: str, *, geo="United Kingdom", accept_lang=ACCEPT_LANG_GB
                 res2 = (data2.get("results") or [{}])[0]
                 content2 = res2.get("content") or ""
                 if _looks_like_html(content2):
+                    if verbose:
+                        print(f"  ✓ Fetched {len(content2):,} bytes (via redirect)")
                     return content2, final_url
                 raise RuntimeError("Oxylabs returned non-HTML on follow")
 
             if not _looks_like_html(content):
                 raise RuntimeError("Oxylabs returned non-HTML (heuristic)")
 
+            if verbose:
+                print(f"  ✓ Fetched {len(content):,} bytes")
             return content, final_url
+            
         except Exception as e:
+            err_str = str(e)
+            if "INVALID_PAGE:" in err_str:
+                raise
             last_exc = e
             time.sleep(1.2)
 
+    if consecutive_204 >= 2:
+        raise RuntimeError("INVALID_PAGE:FETCH_EXHAUSTED_204")
+    
     raise RuntimeError(f"Oxylabs HTML fetch failed: {last_exc}")
 
 
 # -----------------------------
-# Page Validation - DETECT INVALID PAGES
+# Page Validation - DETECT TRULY INVALID PAGES
 # -----------------------------
 def _is_category_or_listing_page(soup: BeautifulSoup, url: str) -> bool:
     """
@@ -705,136 +949,156 @@ def _is_category_or_listing_page(soup: BeautifulSoup, url: str) -> bool:
     if re.search(r"-c\d{5,}\.html$", path):  # Category URL pattern
         return True
     
-    # Check 2: Results count indicator (e.g., "1,234 Results")
-    results_patterns = [
-        r"\d[\d,]*\s*results?\b",
-        r"showing\s+\d+\s*-\s*\d+\s+of\s+\d+",
-        r"\d+\s+products?\s+found",
-    ]
-    page_text = soup.get_text(" ", strip=True).lower()
-    for pattern in results_patterns:
-        if re.search(pattern, page_text, re.I):
-            return True
+    # Check 2: Results count indicator (e.g., "1,234 Results") - but only in specific containers
+    listing_containers = soup.select("[data-test-id='ProductGrid'], [data-test-id='SearchResults'], .ProductGrid")
+    if listing_containers:
+        for container in listing_containers:
+            text = container.get_text(" ", strip=True).lower()
+            if re.search(r"\d[\d,]*\s*results?\b", text, re.I):
+                return True
     
-    # Check 3: Product grid/listing containers
-    listing_selectors = [
-        "[data-test-id='ProductGrid']",
-        "[data-test-id='SearchResults']",
-        ".ProductGrid",
-        "[class*='product-grid']",
-        "[class*='search-results']",
-        ".CategoryProductList",
-    ]
-    for sel in listing_selectors:
-        if soup.select_one(sel):
-            return True
-    
-    # Check 4: Multiple product cards (>3 indicates listing)
+    # Check 3: Multiple product cards (>5 indicates listing, not just "related products")
     product_cards = soup.select("[data-test-id='ProductCard'], [class*='ProductCard']")
-    if len(product_cards) > 3:
+    if len(product_cards) > 5:
         return True
     
-    # Check 5: Filter/Sort UI elements (strong indicator of listing page)
+    # Check 4: Filter/Sort UI elements WITH product grid (strong indicator of listing page)
     filter_indicators = [
         "[data-test-id='FilterSidebar']",
         "[data-test-id='SortDropdown']",
-        "[class*='filter-sidebar']",
-        "[class*='refinement']",
     ]
-    filter_count = sum(1 for sel in filter_indicators if soup.select_one(sel))
-    if filter_count >= 2:
+    has_filters = any(soup.select_one(sel) for sel in filter_indicators)
+    has_product_grid = bool(soup.select_one("[data-test-id='ProductGrid']"))
+    
+    if has_filters and has_product_grid:
         return True
     
     return False
 
 
-def _is_product_unavailable(soup: BeautifulSoup) -> Tuple[bool, Optional[str]]:
+def _is_truly_invalid_page(soup: BeautifulSoup, url: str, verbose: bool = False) -> Tuple[bool, str]:
     """
-    Detect if the product page shows the product as unavailable/discontinued.
-    Returns (is_unavailable, reason)
+    Detect if the page is TRULY invalid (404, removed, etc.)
+    NOT for out-of-stock products - those are valid pages with stock=False.
+    
+    Returns (is_invalid, reason)
     """
-    # Check for specific unavailability messages in product area
-    unavailable_selectors = [
-        "[data-test-id='ProductUnavailable']",
-        "[data-test-id='DiscontinuedMessage']",
-        ".product-unavailable",
-        ".discontinued-product",
-    ]
+    body_text = _clean(soup.get_text(" ", strip=True)).lower() if soup.body else ""
     
-    for sel in unavailable_selectors:
-        el = soup.select_one(sel)
-        if el:
-            text = _clean(el.get_text())
-            if text:
-                return True, text
-    
-    # Check for specific discontinuation messages in product containers
-    product_containers = soup.select(
-        "[data-test-id='ProductDetails'], .ProductDetails, main, #content"
-    )
-    
-    for container in product_containers:
-        text = _clean(container.get_text()).lower()
-        # Very specific patterns
-        if re.search(r"this (product|item) (is|has been) (discontinued|no longer available)", text):
-            return True, "Product is no longer available"
-        if re.search(r"(product|item) no longer (exists|available|sold)", text):
-            return True, "Product no longer exists"
-        if re.search(r"we'?re sorry.{0,30}(discontinued|no longer)", text):
-            return True, "Product has been discontinued"
-    
-    # Check for 404-style page
+    # Check 1: 404/Error page indicators
     title = soup.title.string if soup.title else ""
     if re.search(r"page not found|404|not found", title, re.I):
-        return True, "Page not found (404)"
+        if verbose:
+            print(f"  ⚠ INVALID: 404 in title")
+        return True, "page_not_found_404"
     
-    # Check for error containers
-    error_selectors = [".error-page", ".page-not-found", "[data-test-id='ErrorPage']"]
+    # Check 2: Error page containers
+    error_selectors = [
+        ".error-page", 
+        ".page-not-found", 
+        "[data-test-id='ErrorPage']",
+        "[data-test-id='404Page']",
+    ]
     for sel in error_selectors:
         if soup.select_one(sel):
-            return True, "Error page detected"
+            if verbose:
+                print(f"  ⚠ INVALID: Error page element found - '{sel}'")
+            return True, f"error_element:{sel}"
     
-    return False, None
-
-
-def _is_valid_pdp(soup: BeautifulSoup, url: str) -> Tuple[bool, str]:
-    """
-    Validate if the page is a legitimate Product Detail Page.
-    Returns (is_valid, reason_if_invalid)
-    """
-    # Check if it's a category/listing page
+    # Check 3: Specific "product removed/discontinued" messages (NOT just out of stock)
+    # These indicate the product listing itself is gone, not just temporarily unavailable
+    removed_patterns = [
+        "this product has been removed",
+        "this product is no longer available for purchase",
+        "this item has been discontinued and removed",
+        "product no longer exists",
+        "we're sorry, this product is no longer available",
+    ]
+    for pattern in removed_patterns:
+        if pattern in body_text:
+            if verbose:
+                print(f"  ⚠ INVALID: Removed product pattern - '{pattern}'")
+            return True, f"product_removed:{pattern[:30]}"
+    
+    # Check 4: Category/listing page check
     if _is_category_or_listing_page(soup, url):
-        return False, "URL is a category/listing page, not a product page"
+        if verbose:
+            print(f"  ⚠ INVALID: Category/listing page detected")
+        return True, "category_or_listing_page"
     
-    # Check if product is unavailable
-    is_unavailable, unavailable_reason = _is_product_unavailable(soup)
-    if is_unavailable:
-        return False, unavailable_reason or "Product is no longer available"
-    
-    # Check for essential PDP elements
-    pdp_indicators = {
-        "price_display": bool(soup.select_one("[data-test-id='PriceDisplay']")),
-        "product_name": bool(soup.select_one("h1[data-rtl-id='listingHeaderNameHeading'], h1[data-test-id='ProductName']")),
-        "media_carousel": bool(soup.select_one("[data-test-id='pdp-mt-thumbnails'], #MediaTrayCarouselWithThumbnailSidebar")),
-        "add_to_cart": bool(soup.select_one("[data-test-id='AddToCartButton'], [class*='AddToCart']")),
-        "product_details": bool(soup.select_one("[data-test-id='ProductDetails'], [class*='ProductDetails']")),
+    return False, "valid"
+
+
+def _check_pdp_indicators(soup: BeautifulSoup, verbose: bool = False) -> Tuple[int, dict]:
+    """
+    Check for PDP indicators and return count + details.
+    """
+    indicators = {
+        "price_display": bool(soup.select_one("[data-test-id='PriceDisplay'], [class*='PriceBlock']")),
+        "product_name": bool(soup.select_one("h1[data-rtl-id='listingHeaderNameHeading'], h1[data-test-id='ProductName'], h1")),
+        "media_carousel": bool(soup.select_one("[data-test-id='pdp-mt-thumbnails'], #MediaTrayCarouselWithThumbnailSidebar, [class*='MediaCarousel']")),
+        "product_details": bool(soup.select_one("[data-test-id='ProductDetails'], [class*='ProductDetails'], [class*='ProductInfo']")),
+        "product_images": bool(soup.select("img[src*='assets.wfcdn.com']")),
     }
     
-    indicator_count = sum(pdp_indicators.values())
+    # Also check for add to cart OR out of stock message (both indicate valid PDP)
+    has_add_cart = bool(soup.select_one("[data-test-id='AddToCartButton'], [class*='AddToCart']"))
+    has_oos_message = bool(re.search(r"out of stock|sold out|currently unavailable", 
+                                      soup.get_text(" ", strip=True), re.I))
+    indicators["cart_or_stock_info"] = has_add_cart or has_oos_message
     
-    # Need at least 2 PDP indicators for a valid page
+    count = sum(indicators.values())
+    
+    if verbose:
+        print(f"  PDP indicators ({count}/6): {indicators}")
+    
+    return count, indicators
+
+
+def _is_valid_pdp(soup: BeautifulSoup, url: str, verbose: bool = False) -> Tuple[bool, str]:
+    """
+    Validate if the page is a legitimate Product Detail Page.
+    
+    IMPORTANT: Out-of-stock products are VALID pages, just with in_stock=False.
+    Only truly removed/404/category pages should be marked invalid.
+    
+    Returns (is_valid, reason_if_invalid)
+    """
+    # First: Check for truly invalid pages (404, removed, category)
+    is_invalid, invalid_reason = _is_truly_invalid_page(soup, url, verbose=verbose)
+    if is_invalid:
+        return False, invalid_reason
+    
+    # Second: Check PDP indicators
+    indicator_count, indicators = _check_pdp_indicators(soup, verbose=verbose)
+    
+    # If we have 3+ PDP indicators, it's a valid product page
+    if indicator_count >= 3:
+        if verbose:
+            print(f"  ✓ Valid PDP detected ({indicator_count}/6 indicators)")
+        return True, ""
+    
+    # If URL contains /pdp/ it should be a product page
+    if "/pdp/" in url.lower():
+        # Even with few indicators, /pdp/ URL with ANY product info is likely valid
+        if indicator_count >= 1:
+            if verbose:
+                print(f"  ✓ PDP URL with {indicator_count} indicators - accepting as valid")
+            return True, ""
+        # /pdp/ URL with zero indicators - product likely removed
+        if verbose:
+            print(f"  ⚠ PDP URL but no product indicators found")
+        return False, "pdp_url_no_content"
+    
+    # For non-/pdp/ URLs, be more lenient - could be alternate URL format
     if indicator_count >= 2:
+        if verbose:
+            print(f"  ✓ Accepting page with {indicator_count} PDP indicators")
         return True, ""
     
-    # If URL looks like a PDP (/pdp/) but lacks elements, product may be removed
-    if "/pdp/" in url.lower() and indicator_count == 0:
-        return False, "Product page structure not found - product may have been removed"
-    
-    # Accept with 1 indicator cautiously
-    if indicator_count >= 1:
-        return True, ""
-    
-    return False, "Page does not contain expected product detail elements"
+    if verbose:
+        print(f"  ⚠ Only {indicator_count} PDP indicators - may not be a product page")
+    return False, f"insufficient_pdp_indicators:{indicator_count}"
 
 
 def _create_invalid_result(url: str, reason: str) -> Dict:
@@ -842,17 +1106,18 @@ def _create_invalid_result(url: str, reason: str) -> Dict:
     Create a result dict for invalid/unavailable products.
     """
     return {
-        "name": f"INVALID LINK - {reason}",
-        "price": None,
-        "in_stock": None,
-        "description": None,
+        "name": "INVALID LINK - Product removed or no longer available",
+        "price": "N/A",
+        "in_stock": False,
+        "stock_text": reason,
+        "description": "",
         "image_count": 0,
         "image_urls": [],
         "images": [],
         "folder": None,
         "url": url,
         "mode": "invalid",
-        "is_valid": False,
+        "is_invalid": True,
         "invalid_reason": reason,
     }
 
@@ -877,6 +1142,7 @@ def _iter_jsonld(soup: BeautifulSoup):
             except Exception:
                 continue
 
+
 def _jsonld_find_products(data) -> List[dict]:
     found = []
     stack = [data]
@@ -894,6 +1160,7 @@ def _jsonld_find_products(data) -> List[dict]:
                     stack.append(v)
     return found
 
+
 def _jsonld_availability_from_offers(offers) -> Optional[bool]:
     if not offers:
         return None
@@ -904,17 +1171,15 @@ def _jsonld_availability_from_offers(offers) -> Optional[bool]:
         avail = str(off.get("availability") or off.get("itemAvailability") or "")
         if re.search(r"InStock", avail, re.I):
             return True
-        if re.search(r"OutOfStock|SoldOut|PreOrder", avail, re.I):
+        if re.search(r"OutOfStock|SoldOut|PreOrder|Discontinued", avail, re.I):
             return False
     return None
+
 
 # -----------------------------
 # Wayfair image URL normalization
 # -----------------------------
 def _wf_to_hires(u: str, size: int = 1600) -> str:
-    """
-    Normalize Wayfair CDN URLs to higher-res.
-    """
     if not u:
         return u
     u = u.replace(" ", "%20")
@@ -925,10 +1190,8 @@ def _wf_to_hires(u: str, size: int = 1600) -> str:
                    rf"\1resize-h{size}-w{size}%5Ecompr-r85/", u)
     return u
 
+
 def _img_dedup_key(u: str) -> str:
-    """
-    Extract the unique image identifier from Wayfair CDN URL.
-    """
     m = re.search(r"/(\d{8,10})/[^/]+\.(jpg|jpeg|png|webp)", u, re.I)
     if m:
         return m.group(1)
@@ -936,6 +1199,7 @@ def _img_dedup_key(u: str) -> str:
     u = re.sub(r"/resize-h\d+-w\d+(?:%5E|\^)compr-r\d+/", "/", u)
     u = re.sub(r"/im/\d+/", "/im/X/", u)
     return re.sub(r"[?].*$", "", u)
+
 
 # -----------------------------
 # Core parsing from HTML
@@ -945,6 +1209,13 @@ def _parse_name(soup: BeautifulSoup) -> str:
     if h:
         t = _clean(h.get_text(" ", strip=True))
         if t:
+            return t
+
+    # Try any h1
+    h1 = soup.select_one("h1")
+    if h1:
+        t = _clean(h1.get_text(" ", strip=True))
+        if t and len(t) > 3:
             return t
 
     for data in _iter_jsonld(soup):
@@ -962,6 +1233,7 @@ def _parse_name(soup: BeautifulSoup) -> str:
 
     return "N/A"
 
+
 def _parse_price(soup: BeautifulSoup) -> str:
     price_host = soup.select_one("[data-test-id='PriceDisplay']")
     if price_host:
@@ -969,12 +1241,17 @@ def _parse_price(soup: BeautifulSoup) -> str:
         if txt:
             return txt
 
-    # Look for price in product-specific containers only
+    # Look for price in product-specific containers
     price_containers = soup.select("[data-test-id='ProductPrice'], .product-price, [class*='PriceBlock']")
     for container in price_containers:
         cand = container.find(string=re.compile(r"£\s?\d[\d,]*\.?\d{0,2}"))
         if cand:
             return _clean(cand)
+
+    # Try to find any price on page
+    price_match = re.search(r"£\s?\d[\d,]*\.\d{2}", soup.get_text(" ", strip=True))
+    if price_match:
+        return price_match.group(0)
 
     for data in _iter_jsonld(soup):
         for prod in _jsonld_find_products(data):
@@ -983,7 +1260,7 @@ def _parse_price(soup: BeautifulSoup) -> str:
                 price = offers.get("price") or offers.get("lowPrice")
                 cur = offers.get("priceCurrency", "")
                 if price:
-                    return f"{price} {cur}".strip()
+                    return f"£{price}" if cur == "GBP" else f"{price} {cur}".strip()
             elif isinstance(offers, list):
                 for o in offers:
                     if not isinstance(o, dict):
@@ -991,35 +1268,54 @@ def _parse_price(soup: BeautifulSoup) -> str:
                     price = o.get("price") or o.get("lowPrice")
                     cur = o.get("priceCurrency", "")
                     if price:
-                        return f"{price} {cur}".strip()
+                        return f"£{price}" if cur == "GBP" else f"{price} {cur}".strip()
 
     return "N/A"
 
-def _parse_stock(soup: BeautifulSoup) -> Optional[bool]:
-    oos_texts = [
-        "Out of Stock",
-        "Not available",
-        "Sold Out",
+
+def _parse_stock(soup: BeautifulSoup) -> Tuple[Optional[bool], str]:
+    """
+    Parse stock status. Returns (in_stock, stock_text).
+    
+    IMPORTANT: Out-of-stock is a valid status, not an error!
+    """
+    page_text = soup.get_text(" ", strip=True)
+    
+    # Check for out of stock indicators
+    oos_patterns = [
+        (r"\bout of stock\b", "out_of_stock"),
+        (r"\bsold out\b", "sold_out"),
+        (r"\bcurrently unavailable\b", "currently_unavailable"),
+        (r"\bnot available\b", "not_available"),
+        (r"\bdiscontinued\b", "discontinued"),
     ]
     
-    # Check in product-specific areas, not entire page
-    product_area = soup.select_one("[data-test-id='ProductDetails'], main, #content") or soup
-    page_text = product_area.get_text(" ", strip=True)
-    
-    for t in oos_texts:
-        if re.search(rf"\b{re.escape(t)}\b", page_text, re.I):
-            return False
+    for pattern, status in oos_patterns:
+        if re.search(pattern, page_text, re.I):
+            return False, status
 
-    if re.search(r"\bAdd to (Cart|Basket)\b", page_text, re.I) and not re.search(r"Out of Stock|Not available", page_text, re.I):
-        return True
+    # Check for in-stock indicators
+    if re.search(r"\bAdd to (Cart|Basket)\b", page_text, re.I):
+        # Make sure it's not disabled
+        add_btn = soup.select_one("[data-test-id='AddToCartButton']")
+        if add_btn:
+            if add_btn.get("disabled") or "disabled" in (add_btn.get("class") or []):
+                return False, "add_to_cart_disabled"
+            return True, "add_to_cart_available"
+        return True, "add_to_cart_text"
 
+    if re.search(r"\bin stock\b", page_text, re.I):
+        return True, "in_stock_text"
+
+    # Check JSON-LD
     for data in _iter_jsonld(soup):
         for prod in _jsonld_find_products(data):
             avail = _jsonld_availability_from_offers(prod.get("offers"))
             if avail is not None:
-                return avail
+                return avail, "jsonld"
 
-    return None
+    return None, "unknown"
+
 
 def _parse_description(soup: BeautifulSoup) -> str:
     def _clean_text(t: str) -> str:
@@ -1044,7 +1340,7 @@ def _parse_description(soup: BeautifulSoup) -> str:
         if re.search(r"\bFeatures\b", p.get_text(" ", strip=True), re.I):
             nxt = p.find_next("ul")
             if nxt:
-                items = [ _clean_text(li.get_text(" ", strip=True)) for li in nxt.select("li") ]
+                items = [_clean_text(li.get_text(" ", strip=True)) for li in nxt.select("li")]
                 items = [i for i in items if i]
                 if items:
                     features.append("Features:\n- " + "\n- ".join(items))
@@ -1076,10 +1372,8 @@ def _parse_description(soup: BeautifulSoup) -> str:
 
     return "N/A"
 
+
 def _parse_images(soup: BeautifulSoup) -> List[str]:
-    """
-    Extract unique product images from Wayfair PDP.
-    """
     from typing import Tuple
     ordered: List[Tuple[int, str]] = []
     seen_ids: set[str] = set()
@@ -1131,15 +1425,23 @@ def _parse_images(soup: BeautifulSoup) -> List[str]:
                     seen_ids.add(img_id)
                     images.append(_wf_to_hires(src, size=1600))
     
+    # Fallback: any Wayfair CDN images
+    if not images:
+        for img in soup.select("img[src*='assets.wfcdn.com']"):
+            src = img.get("src") or ""
+            if src:
+                img_id = _img_dedup_key(src)
+                if img_id not in seen_ids:
+                    seen_ids.add(img_id)
+                    images.append(_wf_to_hires(src, size=1600))
+    
     return images
 
+
 # -----------------------------
-# Downloader — JPG only + unique names
+# Downloader
 # -----------------------------
-def _download_images_jpg(urls: List[str], referer: str, folder: Path, base_slug: str) -> List[str]:
-    """
-    Downloads all images and writes JPG only, with deterministic unique names.
-    """
+def _download_images_jpg(urls: List[str], referer: str, folder: Path, base_slug: str, verbose: bool = True) -> List[str]:
     folder.mkdir(parents=True, exist_ok=True)
     out: List[str] = []
     sess = _session_with_retries()
@@ -1164,9 +1466,16 @@ def _download_images_jpg(urls: List[str], referer: str, folder: Path, base_slug:
             path = folder / f"{base_slug}_{i:02d}.jpg"
             im.save(path, format="JPEG", quality=92, optimize=True)
             out.append(str(path))
-        except Exception:
+            
+            if verbose:
+                print(f"  ✓ image {i}")
+                
+        except Exception as e:
+            if verbose:
+                print(f"  ✗ image {i}: {e}")
             continue
     return out
+
 
 # -----------------------------
 # Public API
@@ -1174,68 +1483,83 @@ def _download_images_jpg(urls: List[str], referer: str, folder: Path, base_slug:
 def scrape_wayfair_product(url: str, save_dir: Path | None = None, *, geo="United Kingdom", verbose: bool = True) -> dict:
     """
     Fetch Wayfair PDP via Oxylabs and return parsed data + downloaded JPG images.
-    Validates that the URL is a legitimate product page.
-    Returns invalid result for category/listing pages or unavailable products.
+    
+    IMPORTANT: Out-of-stock products are returned as valid with in_stock=False.
+    Only truly removed/404/category pages are marked as invalid.
     """
+    if verbose:
+        print(f"Fetching {url}...")
+    
     if save_dir is None:
         save_dir = SAVE_DIR
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Ensure debug dir exists
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
-    accept_lang = ACCEPT_LANG_GB
-    
+    # Fetch HTML
     try:
-        html_doc, final_url = oxy_fetch_html(url, geo=geo, accept_lang=accept_lang, timeout=90)
-    except Exception as e:
+        html_doc, final_url = oxy_fetch_html(url, geo=geo, timeout=90, verbose=verbose)
+    except RuntimeError as e:
+        err_str = str(e)
+        if "INVALID_PAGE:" in err_str:
+            reason = err_str.split("INVALID_PAGE:")[-1]
+            if verbose:
+                print(f"✗ Invalid link detected (fetch failed): {reason}")
+            return _create_invalid_result(url, f"fetch_failed:{reason}")
+        
         if verbose:
-            print(f"Failed to fetch URL: {e}")
-        return _create_invalid_result(url, f"Failed to fetch page: {str(e)}")
+            print(f"✗ Failed to fetch URL: {e}")
+        return _create_invalid_result(url, f"fetch_failed:{str(e)}")
 
     soup = BeautifulSoup(html_doc, "lxml")
-    
-    # Save HTML for debugging if needed
-    if verbose:
-        debug_file = DEBUG_DIR / f"wayfair_debug_{_short_uid(url)}.html"
-        try:
-            debug_file.write_text(html_doc, encoding="utf-8")
-            print(f"Debug HTML saved to: {debug_file}")
-        except Exception:
-            pass
 
-    # ========== VALIDATION CHECK ==========
-    is_valid, invalid_reason = _is_valid_pdp(soup, url)
+    # Validate page
+    is_valid, invalid_reason = _is_valid_pdp(soup, url, verbose=verbose)
     if not is_valid:
         if verbose:
-            print(f"⚠ Invalid page detected: {invalid_reason}")
+            print(f"✗ Invalid page detected: {invalid_reason}")
         return _create_invalid_result(url, invalid_reason)
-    # ======================================
 
+    # Parse product data
     name = _parse_name(soup)
     price = _parse_price(soup)
-    in_stock = _parse_stock(soup)
+    in_stock, stock_text = _parse_stock(soup)
     description = _parse_description(soup)
 
-    # Post-extraction validation
+    if verbose:
+        print(f"  Name: {name}")
+        print(f"  Price: {price}")
+        print(f"  In Stock: {in_stock} ({stock_text})")
+
+    # Post-extraction validation - only fail if we got NOTHING
     if name == "N/A" and price == "N/A" and description == "N/A":
         if verbose:
-            print("⚠ Could not extract any product data")
-        return _create_invalid_result(url, "Could not extract product information")
+            print("✗ Could not extract any product data")
+        return _create_invalid_result(url, "no_product_data_extracted")
 
     name_slug = _safe_name(name)
     uid = _short_uid(final_url)
     base_slug = f"{name_slug}_{uid}"
 
     images = _parse_images(soup)
+    
+    if verbose:
+        print(f"  Images found: {len(images)}")
+
     folder = save_dir / base_slug
-    downloaded = _download_images_jpg(images, referer=final_url, folder=folder, base_slug=base_slug)
+    
+    if images:
+        if verbose:
+            print(f"\nDownloading {len(images)} images...")
+        downloaded = _download_images_jpg(images, referer=final_url, folder=folder, base_slug=base_slug, verbose=verbose)
+    else:
+        downloaded = []
 
     return {
         "name": name,
         "price": price,
         "in_stock": in_stock,
+        "stock_text": stock_text,
         "description": description,
         "image_count": len(downloaded),
         "image_urls": images,
@@ -1243,9 +1567,10 @@ def scrape_wayfair_product(url: str, save_dir: Path | None = None, *, geo="Unite
         "folder": str(folder),
         "url": final_url,
         "mode": "oxylabs(html)+direct(images_jpg_only)",
-        "is_valid": True,
+        "is_invalid": False,
         "invalid_reason": None,
     }
+
 
 # # -----------------------------
 # # CLI test
@@ -1253,21 +1578,20 @@ def scrape_wayfair_product(url: str, save_dir: Path | None = None, *, geo="Unite
 # if __name__ == "__main__":
 #     import sys
     
-#     # Test URLs
-#     TEST_URLS = [
-#         # Category URL (should be invalid)
-#         # "https://www.wayfair.co.uk/kitchenware-tableware/sb0/mixers-attachments-c1804929.html",
-#         # Valid product URL
-#         "https://www.wayfair.co.uk/kitchenware-tableware/pdp/laura-ashley-vq-laura-ashley-jug-kettle-china-rose-laas1109.html",
-#     ]
-    
-#     # Allow passing URL as command line argument
 #     if len(sys.argv) > 1:
-#         TEST_URLS = [sys.argv[1]]
+#         TEST_URL = sys.argv[1]
+#     else:
+#         TEST_URL = "https://www.wayfair.co.uk/kitchenware-tableware/pdp/laura-ashley-179637l-electric-tea-kettle-laas1112.html?piid=102385482"
     
-#     for test_url in TEST_URLS:
-#         print(f"\nTesting: {test_url}")
-#         print("=" * 70)
-#         data = scrape_wayfair_product(test_url, verbose=True)
+#     print(f"\n{'='*60}")
+#     print(f"Testing: {TEST_URL}")
+#     print(f"{'='*60}\n")
+    
+#     try:
+#         data = scrape_wayfair_product(TEST_URL, verbose=True)
+#         print("\n" + "=" * 60)
+#         print("RESULTS:")
+#         print("=" * 60)
 #         print(json.dumps(data, indent=2, ensure_ascii=False))
-#         print()
+#     except Exception as e:
+#         print(f"\n✗ ERROR: {e}")

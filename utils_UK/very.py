@@ -1,6 +1,4 @@
-
-
-# # very_oxylabs.py
+# # very.py
 # # Python 3.9+
 # # pip install requests beautifulsoup4 lxml pillow
 
@@ -71,14 +69,14 @@
 #     return (m.group(1) if m else hashlib.sha1(u.encode("utf-8")).hexdigest())[:16]
 
 # def _to_hires(u: str) -> str:
-#     # Upgrade Very's media square thumbs → hi-res JPG
-#     # Example: https://media.very.co.uk/i/very/xxx_SQ90_?wid=1200&fmt=jpg
-#     parts = list(urlsplit(u))
-#     q = dict(parse_qsl(parts[3], keep_blank_values=True))
-#     q.setdefault("wid", "1200")
-#     q["fmt"] = "jpg"
-#     parts[3] = urlencode(q)
-#     return urlunsplit(parts)
+#     """
+#     Upgrade Very's media URLs to high-res JPG.
+#     Input: https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?$pdp_48x64_x2$&fmt=webp
+#     Output: https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?wid=1200&fmt=jpg
+#     """
+#     # Remove any existing query params and add high-res ones
+#     base = re.sub(r'\?.*$', '', u)
+#     return f"{base}?wid=1200&fmt=jpg"
 
 # def _drop_query(u: str) -> str:
 #     p = list(urlsplit(u)); p[3] = ""; p[4] = ""; return urlunsplit(p)
@@ -184,42 +182,126 @@
 #     return "N/A"
 
 # def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
-#     # Collect thumb <img> src/srcset that match Very CDN “_SQ##_”
+#     """
+#     Extract thumbnail URLs from Very product pages.
+    
+#     Very uses URLs like:
+#     https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?$pdp_48x64_x2$&fmt=webp
+    
+#     The _SQ#_ part indicates the image sequence number (SQ1, SQ2, etc.)
+#     The code before _SQ (like W7XJ1) identifies the product.
+#     """
 #     urls: List[str] = []
-
-#     for img in soup.find_all("img"):
-#         srcs = []
-#         if img.has_attr("src"): srcs.append(img["src"])
-#         if img.has_attr("data-src"): srcs.append(img["data-src"])
-#         if img.has_attr("srcset"):
-#             # take first src from srcset
-#             srcs.extend([s.split()[0] for s in str(img["srcset"]).split(",") if s.strip()])
-
-#         for s in srcs:
-#             if not s: continue
-#             if re.search(r"media\.very\.co\.uk/i/very/[^?\"'<>]*_SQ\d+_", s, re.I):
-#                 urls.append(s)
-
-#     # Fallback: regex over whole HTML in case images are not in DOM nodes
-#     if not urls:
-#         html_txt = str(soup)
-#         urls = re.findall(r'https://media\.very\.co\.uk/i/very/[^?"\'<>]*_SQ\d+_[^?"\'<>]*',
-#                           html_txt, flags=re.I)
-
-#     # Deduplicate by base path (ignore query)
-#     def _base(u: str) -> str: return re.sub(r'\?.*$', '', u)
-#     seen = set(); unique = []
+#     html_txt = str(soup)
+    
+#     # First, find the main product's image code from the thumbnail carousel
+#     # The carousel contains the main product images with aria-label like "Go to slide 1"
+#     # or alt text like "Image thumbnail 1 of 7 of [Product Name]"
+#     main_product_code = None
+    
+#     # Strategy 1: Look in the splide carousel (thumbnail gallery)
+#     carousel = soup.select_one('.splide, [class*="ThumbnailCarousel"], [class*="ImageGallery"]')
+#     if carousel:
+#         # Find first image in carousel
+#         for source in carousel.find_all(['source', 'img']):
+#             for attr in ['srcset', 'src']:
+#                 val = source.get(attr, '')
+#                 if val and 'media.very.co.uk' in val and '_SQ' in val:
+#                     val = html.unescape(val.split(',')[0].split()[0])
+#                     # Extract product code (the part before _SQ)
+#                     m = re.search(r'/very/([A-Z0-9]+)_SQ', val, re.I)
+#                     if m:
+#                         main_product_code = m.group(1)
+#                         break
+#             if main_product_code:
+#                 break
+    
+#     # Strategy 2: Look for images with "thumbnail 1 of" in alt text
+#     if not main_product_code:
+#         for img in soup.find_all('img', alt=re.compile(r'thumbnail\s+1\s+of', re.I)):
+#             src = img.get('src', '') or img.get('srcset', '')
+#             if src and 'media.very.co.uk' in src:
+#                 src = html.unescape(src.split(',')[0].split()[0])
+#                 m = re.search(r'/very/([A-Z0-9]+)_SQ', src, re.I)
+#                 if m:
+#                     main_product_code = m.group(1)
+#                     break
+    
+#     # Strategy 3: Find the most common product code with multiple SQ numbers
+#     if not main_product_code:
+#         all_codes = re.findall(r'/very/([A-Z0-9]+)_SQ(\d+)_', html_txt, re.I)
+#         if all_codes:
+#             # Count which product codes have multiple SQ numbers (SQ1, SQ2, etc.)
+#             from collections import defaultdict
+#             code_sq_numbers = defaultdict(set)
+#             for code, sq in all_codes:
+#                 code_sq_numbers[code.upper()].add(int(sq))
+            
+#             # The main product should have sequential SQ1, SQ2, SQ3...
+#             # Other products (recommendations) usually only have SQ1
+#             best_code = None
+#             best_count = 0
+#             for code, sq_nums in code_sq_numbers.items():
+#                 if len(sq_nums) > best_count:
+#                     best_count = len(sq_nums)
+#                     best_code = code
+            
+#             if best_code and best_count >= 2:
+#                 main_product_code = best_code
+    
+#     if not main_product_code:
+#         # Fallback: just take first code found
+#         m = re.search(r'/very/([A-Z0-9]+)_SQ\d+_', html_txt, re.I)
+#         if m:
+#             main_product_code = m.group(1)
+    
+#     if not main_product_code:
+#         return []
+    
+#     # Now extract all images with this product code
+#     # Pattern: https://media.very.co.uk/i/very/{CODE}_SQ{N}_{REST}
+#     pattern = rf'https://media\.very\.co\.uk/i/very/{main_product_code}_SQ(\d+)_[^?"\'<>\s&]+'
+    
+#     found_urls = re.findall(pattern, html_txt, re.I)
+    
+#     # Also check source and img tags specifically
+#     for source in soup.find_all(['source', 'img']):
+#         for attr in ['srcset', 'src', 'data-src']:
+#             val = source.get(attr, '')
+#             if val and 'media.very.co.uk' in val and main_product_code in val.upper():
+#                 for part in val.split(','):
+#                     part = part.strip().split()[0] if part.strip() else ''
+#                     part = html.unescape(part)
+#                     if re.search(rf'{main_product_code}_SQ\d+_', part, re.I):
+#                         base_match = re.match(rf'(https://media\.very\.co\.uk/i/very/{main_product_code}_SQ\d+_[^?]+)', part, re.I)
+#                         if base_match:
+#                             urls.append(base_match.group(1))
+    
+#     # Also get from regex on full HTML
+#     full_pattern = rf'https://media\.very\.co\.uk/i/very/{main_product_code}_SQ\d+_[^?"\'<>\s&]+'
+#     urls.extend(re.findall(full_pattern, html_txt, re.I))
+    
+#     # Deduplicate by base path
+#     def _base_path(u: str) -> str:
+#         return re.sub(r'\?.*$', '', u).lower()
+    
+#     seen = set()
+#     unique = []
 #     for u in urls:
-#         b = _base(u)
-#         if b not in seen:
-#             seen.add(b); unique.append(u)
-
-#     # Order by the SQ number
+#         base = _base_path(u)
+#         if base not in seen:
+#             seen.add(base)
+#             unique.append(re.sub(r'\?.*$', '', u))  # Store without query params
+    
+#     # Sort by SQ number to maintain correct order
 #     def _sq_num(u: str) -> int:
-#         m = re.search(r"_SQ(\d+)_", u)
+#         m = re.search(r'_SQ(\d+)_', u, re.I)
 #         return int(m.group(1)) if m else 9999
+    
 #     unique.sort(key=_sq_num)
-#     return unique[:7]
+    
+#     # Limit to reasonable number of images
+#     return unique[:10]
 
 # # ---------------------------
 # # Public API
@@ -287,22 +369,23 @@
 #                 print(f"  ! image error: {u} ({e})")
 
 #     return {
+#         "url": url,
 #         "name": name,
 #         "price": price,
 #         "in_stock": in_stock,
 #         "description": description,
 #         "image_count": len(downloaded),
+#         "image_urls": img_urls,
 #         "images": downloaded,
 #         "folder": str(folder),
 #     }
 
-# # ---------------------------
-# # CLI
-# # ---------------------------
-# if __name__ == "__main__":
-#     test = "https://www.very.co.uk/laura-ashley-elveden-navy-17l-kettle/1601066431.prd?utm"  
-#     print(json.dumps(scrape_very_product(test), indent=2, ensure_ascii=False))
-
+# # # ---------------------------
+# # # CLI
+# # # ---------------------------
+# # if __name__ == "__main__":
+# #     test = "https://www.very.co.uk/laura-ashley-china-rose-17l-kettle/1601066433.prd"  
+# #     print(json.dumps(scrape_very_product(test), indent=2, ensure_ascii=False))
 
 
 
@@ -310,18 +393,21 @@
 # very.py
 # Python 3.9+
 # pip install requests beautifulsoup4 lxml pillow
+# Version: 2.0 - Added retry logic for 204 errors and invalid link detection
 
 from __future__ import annotations
-import os, re, sys, io, time, html, json, hashlib
+import os, re, sys, io, time, html, json, hashlib, random
 from pathlib import Path
-from typing import List, Optional, Dict, Any
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, urldefrag
+from typing import List, Optional, Dict, Any, Tuple
+from urllib.parse import urlsplit, urlunsplit, urldefrag
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from PIL import Image
+
+__version__ = "2.0"
 
 # ---------------------------
 # Paths (keep your data1 rule)
@@ -354,6 +440,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "Chrome/128.0.0.0 Safari/537.36")
 ACCEPT_LANG = "en-GB,en;q=0.9"
 
+
 def _session_with_retries(total=3, backoff=0.7) -> requests.Session:
     s = requests.Session()
     r = Retry(
@@ -363,32 +450,50 @@ def _session_with_retries(total=3, backoff=0.7) -> requests.Session:
         allowed_methods=frozenset(["GET", "POST", "HEAD"])
     )
     ad = HTTPAdapter(max_retries=r, pool_maxsize=20)
-    s.mount("https://", ad); s.mount("http://", ad)
+    s.mount("https://", ad)
+    s.mount("http://", ad)
     return s
+
 
 def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(s or "")).strip()
 
+
 def _safe_name(name: str) -> str:
     n = re.sub(r"[^\w\s-]", "", name or "").strip().replace(" ", "_")
-    return n or "NA"
+    return n[:100] or "NA"
+
 
 def _stable_id_from_url(u: str) -> str:
+    # Extract product ID like 1601066433 from URL
+    m = re.search(r"/(\d{8,})\.", u)
+    if m:
+        return m.group(1)
     m = re.search(r"/products?/([A-Za-z0-9_-]+)", u)
     return (m.group(1) if m else hashlib.sha1(u.encode("utf-8")).hexdigest())[:16]
+
+
+def _extract_product_id_from_url(url: str) -> Optional[str]:
+    """Extract product ID from Very URL for validation."""
+    # URL pattern: /laura-ashley-china-rose-17l-kettle/1601066433.prd
+    m = re.search(r"/(\d{8,})\.prd", url)
+    return m.group(1) if m else None
+
 
 def _to_hires(u: str) -> str:
     """
     Upgrade Very's media URLs to high-res JPG.
-    Input: https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?$pdp_48x64_x2$&fmt=webp
-    Output: https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?wid=1200&fmt=jpg
     """
-    # Remove any existing query params and add high-res ones
     base = re.sub(r'\?.*$', '', u)
     return f"{base}?wid=1200&fmt=jpg"
 
+
 def _drop_query(u: str) -> str:
-    p = list(urlsplit(u)); p[3] = ""; p[4] = ""; return urlunsplit(p)
+    p = list(urlsplit(u))
+    p[3] = ""
+    p[4] = ""
+    return urlunsplit(p)
+
 
 def _bytes_to_jpg(content: bytes) -> bytes:
     with Image.open(io.BytesIO(content)) as im:
@@ -397,34 +502,242 @@ def _bytes_to_jpg(content: bytes) -> bytes:
         im.save(out, format="JPEG", quality=90, optimize=True)
         return out.getvalue()
 
+
 # ---------------------------
-# Oxylabs HTML fetch
+# Oxylabs HTML fetch with RETRY LOGIC
 # ---------------------------
-def oxy_fetch_html(url: str, *, geo="United Kingdom", timeout=90) -> str:
+def oxy_fetch_html(url: str, *, geo="United Kingdom", timeout=90, verbose: bool = False) -> str:
+    """
+    Fetch HTML via Oxylabs with retry logic for 204/400 errors.
+    """
     url, _ = urldefrag(url)
-    payload = {
-        "source": "universal",
-        "url": url,
-        "render": "html",
-        "geo_location": geo,
-        "headers": {"User-Agent": UA, "Accept-Language": ACCEPT_LANG},
-    }
-    sess = _session_with_retries()
+    
+    max_attempts = 4
+    consecutive_204 = 0
+    session_failed_count = 0
     last_exc: Optional[Exception] = None
-    for i in range(3):
+    
+    for attempt in range(max_attempts):
+        session_id = f"very-{int(time.time())}-{random.randint(1000, 9999)}"
+        
+        payload = {
+            "source": "universal",
+            "url": url,
+            "render": "html",
+            "geo_location": geo,
+            "headers": {"User-Agent": UA, "Accept-Language": ACCEPT_LANG},
+            "context": [
+                {"key": "session_id", "value": session_id}
+            ],
+            "rendering_wait": 3000,
+        }
+        
+        if verbose:
+            print(f"  Attempt {attempt + 1}/{max_attempts} (session: {session_id})...")
+        
         try:
+            sess = _session_with_retries()
             r = sess.post("https://realtime.oxylabs.io/v1/queries",
                           auth=(OXY_USER, OXY_PASS), json=payload, timeout=timeout)
+            
+            # Success
+            if r.status_code == 200:
+                data = r.json()
+                html_content = (data.get("results") or [{}])[0].get("content", "")
+                
+                if html_content and "<html" in html_content.lower() and len(html_content) > 500:
+                    if verbose:
+                        print(f"  ✓ Fetched {len(html_content):,} bytes")
+                    return html_content
+                else:
+                    if verbose:
+                        print(f"  ⚠ Empty/non-HTML content, retrying...")
+                    last_exc = RuntimeError("Empty or non-HTML content")
+                    time.sleep(2)
+                    continue
+            
+            # HTTP 204 - No Content
+            if r.status_code == 204:
+                consecutive_204 += 1
+                if verbose:
+                    print(f"  ⚠ HTTP 204 (No Content) - count {consecutive_204}")
+                
+                if consecutive_204 >= 3:
+                    raise RuntimeError("INVALID_PAGE:HTTP_204_REPEATED")
+                
+                time.sleep(2 + attempt)
+                continue
+            
+            # HTTP 400 - Session failed
+            if r.status_code == 400:
+                try:
+                    err_data = r.json()
+                    err_msg = err_data.get("message", "")
+                except Exception:
+                    err_msg = r.text[:200]
+                
+                if "failed" in err_msg.lower() or "session" in err_msg.lower():
+                    session_failed_count += 1
+                    if verbose:
+                        print(f"  ⚠ Session failed: {err_msg[:60]}")
+                    
+                    if consecutive_204 > 0 and session_failed_count >= 2:
+                        raise RuntimeError("INVALID_PAGE:SESSION_FAILED_AFTER_204")
+                    
+                    time.sleep(3)
+                    continue
+                
+                raise RuntimeError(f"Oxylabs HTTP 400: {err_msg}")
+            
+            # Other errors
             r.raise_for_status()
-            data = r.json()
-            html_content = (data.get("results") or [{}])[0].get("content", "")
-            if "<html" not in html_content.lower():
-                raise RuntimeError("Oxylabs returned non-HTML content")
-            return html_content
+            
+        except RuntimeError as e:
+            if "INVALID_PAGE:" in str(e):
+                raise
+            last_exc = e
+            if attempt < max_attempts - 1:
+                time.sleep(1.5 ** (attempt + 1))
+            continue
         except Exception as e:
             last_exc = e
-            time.sleep(1.5 ** (i + 1))
+            if attempt < max_attempts - 1:
+                time.sleep(1.5 ** (attempt + 1))
+            continue
+    
+    if consecutive_204 >= 2:
+        raise RuntimeError("INVALID_PAGE:FETCH_EXHAUSTED_204")
+    
     raise RuntimeError(f"Oxylabs HTML fetch failed: {last_exc}")
+
+
+# ---------------------------
+# Invalid Link Detection
+# ---------------------------
+def _check_invalid_product_page(soup: BeautifulSoup, html_doc: str, url: str, verbose: bool = False) -> Tuple[bool, str]:
+    """
+    Check if a Very product URL has returned an error/listing page instead of PDP.
+    
+    Very invalid page indicators:
+    - 404/error page
+    - Redirect to search/category page
+    - Missing product elements (brand, title, price, images)
+    - Multiple product cards (listing page) without PDP elements
+    
+    Returns (is_invalid, reason) tuple.
+    """
+    html_lower = html_doc.lower()
+    body_text = _clean(soup.get_text(" ", strip=True)).lower() if soup.body else ""
+    
+    # Extract expected product ID from URL
+    expected_id = _extract_product_id_from_url(url)
+    
+    # ===== FIRST: Check if this looks like a valid PDP =====
+    # Very PDP indicators
+    has_product_brand = bool(soup.select_one("[data-testid='product_brand']"))
+    has_product_title = bool(soup.select_one("[data-testid='product_title']"))
+    has_product_price = bool(soup.select_one("[data-testid='product-price__basic'], [data-testid='product-price']"))
+    has_add_basket = bool(soup.find(lambda t: t.name in ("button", "a") and 
+                                     re.search(r"add\s*to\s*basket", t.get_text(" ", strip=True), re.I)))
+    has_product_description = bool(soup.select_one("[data-testid='product_description_body']"))
+    has_image_gallery = bool(soup.select_one('.splide, [class*="ThumbnailCarousel"], [class*="ImageGallery"]'))
+    
+    # Check for product images from Very's CDN
+    has_very_images = bool(re.search(r'media\.very\.co\.uk/i/very/[A-Z0-9]+_SQ\d+', html_doc, re.I))
+    
+    pdp_indicators = sum([has_product_brand, has_product_title, has_product_price, 
+                          has_add_basket, has_product_description, has_image_gallery, has_very_images])
+    
+    # If we have strong PDP indicators (4+), this is likely a valid product page
+    if pdp_indicators >= 4:
+        if verbose:
+            print(f"  ✓ Valid PDP detected ({pdp_indicators}/7 indicators)")
+        return False, "valid"
+    
+    # ===== Check 1: 404/Error page indicators =====
+    error_patterns = [
+        "page not found",
+        "404",
+        "product not found",
+        "sorry, we can't find",
+        "this page doesn't exist",
+        "no longer available",
+        "has been removed",
+        "oops! something went wrong",
+        "we couldn't find what you're looking for",
+    ]
+    for pattern in error_patterns:
+        if pattern in body_text:
+            if verbose:
+                print(f"  ⚠ INVALID: Error pattern found - '{pattern}'")
+            return True, f"error_message:{pattern[:30]}"
+    
+    # ===== Check 2: Error page elements =====
+    error_selectors = [
+        ".error-page", "#error-page", ".page-404", "#page-404",
+        "[class*='ErrorPage']", "[class*='NotFound']",
+        "[data-testid='error-page']", "[data-testid='404']"
+    ]
+    for sel in error_selectors:
+        if soup.select_one(sel):
+            if verbose:
+                print(f"  ⚠ INVALID: Error page element found - '{sel}'")
+            return True, f"error_element:{sel}"
+    
+    # ===== Check 3: Listing/category page (multiple products WITHOUT PDP elements) =====
+    if pdp_indicators < 3:
+        product_cards = soup.select("[data-testid='product-card'], .product-card, [class*='ProductCard']")
+        product_tiles = soup.select(".product-tile, [class*='ProductTile']")
+        
+        total_products = len(product_cards) + len(product_tiles)
+        if total_products >= 4:
+            if verbose:
+                print(f"  ⚠ INVALID: Listing page detected ({total_products} product cards/tiles)")
+            return True, f"listing_page:{total_products}_products"
+    
+    # ===== Check 4: Pagination (listing page indicator) - only if no PDP elements =====
+    if pdp_indicators < 3:
+        pagination = soup.select_one(".pagination, [class*='Pagination'], [data-testid='pagination']")
+        results_count = soup.find(string=re.compile(r"\d+\s+products?|\d+\s+results?|\d+\s+items?", re.I))
+        
+        if pagination and results_count:
+            if verbose:
+                print(f"  ⚠ INVALID: Pagination with results count found (listing page)")
+            return True, "listing_page:pagination_found"
+    
+    # ===== Check 5: Missing PDP-specific elements =====
+    if pdp_indicators < 3:
+        if verbose:
+            print(f"  ⚠ INVALID: Missing PDP elements (only {pdp_indicators}/7 found)")
+            print(f"    - Brand: {has_product_brand}, Title: {has_product_title}, Price: {has_product_price}, "
+                  f"AddBasket: {has_add_basket}, Description: {has_product_description}, "
+                  f"Gallery: {has_image_gallery}, VeryImages: {has_very_images}")
+        return True, f"no_pdp_content:{pdp_indicators}_indicators"
+    
+    # ===== Check 6: Search results page =====
+    if pdp_indicators < 3:
+        if soup.select_one("[data-testid='search-results'], .search-results, #searchResults"):
+            if verbose:
+                print(f"  ⚠ INVALID: Search results page detected")
+            return True, "search_results_page"
+    
+    # ===== Check 7: Product ID mismatch =====
+    if expected_id and pdp_indicators < 4:
+        # Check if the page contains the expected product ID
+        if expected_id not in html_doc:
+            if verbose:
+                print(f"  ⚠ INVALID: Product ID {expected_id} not found in page")
+            return True, f"id_not_found:{expected_id}"
+    
+    # ===== Check 8: No product name found =====
+    name = _parse_name(soup)
+    if name in ["N/A", "", "Unknown Product"]:
+        if verbose:
+            print(f"  ⚠ INVALID: No product name found")
+        return True, "no_product_name"
+    
+    return False, "valid"
+
 
 # ---------------------------
 # Parse Very PDP
@@ -434,52 +747,62 @@ def _parse_name(soup: BeautifulSoup) -> str:
     brand = ""
     title = ""
     b = soup.select_one("[data-testid='product_brand']")
-    if b: brand = _clean(b.get_text(" ", strip=True))
+    if b:
+        brand = _clean(b.get_text(" ", strip=True))
     t = soup.select_one("[data-testid='product_title']")
-    if t: title = _clean(t.get_text(" ", strip=True))
+    if t:
+        title = _clean(t.get_text(" ", strip=True))
     name = (brand + " " + title).strip()
     if not name:
         # fallback h1
         h1 = soup.find("h1")
-        if h1: name = _clean(h1.get_text(" ", strip=True))
+        if h1:
+            name = _clean(h1.get_text(" ", strip=True))
     return name or "N/A"
+
 
 def _parse_price(soup: BeautifulSoup) -> str:
     pr = soup.select_one("[data-testid='product-price__basic']")
     if pr:
         txt = _clean(pr.get_text(" ", strip=True))
-        # normalize common cases like "£79" / "£79.99"
         m = re.search(r"£\s*\d+(?:\.\d{2})?", txt)
-        if m: return m.group(0).replace(" ", "")
+        if m:
+            return m.group(0).replace(" ", "")
         return txt
     # fallback: look for £ in the DOM
     m = re.search(r"£\s*\d+(?:\.\d{2})?", soup.get_text(" ", strip=True))
     return m.group(0).replace(" ", "") if m else "N/A"
 
-def _parse_stock(soup: BeautifulSoup) -> Optional[bool]:
-    # Prefer visible "Add to basket" button (usually present when in-stock)
-    add_btn = soup.find(lambda t: t.name in ("button","a") and re.search(r"add\s*to\s*basket", t.get_text(" ", strip=True), re.I))
+
+def _parse_stock(soup: BeautifulSoup) -> Tuple[Optional[bool], str]:
+    """Returns (in_stock, stock_text)"""
+    # Prefer visible "Add to basket" button
+    add_btn = soup.find(lambda t: t.name in ("button", "a") and 
+                        re.search(r"add\s*to\s*basket", t.get_text(" ", strip=True), re.I))
     if add_btn:
-        # try to ensure not disabled
         if ("disabled" not in (add_btn.attrs or {})) and ("aria-disabled" not in (add_btn.attrs or {})):
-            return True
-    # Look for explicit "In stock" badge near PDP
+            return True, "add_to_basket"
+    
+    # Look for explicit stock text
     text = soup.get_text(" ", strip=True)
-    if re.search(r"\bIn stock\b", text, re.I): return True
-    if re.search(r"\bOut of stock\b|\bSold out\b", text, re.I): return False
-    return None
+    if re.search(r"\bIn stock\b", text, re.I):
+        return True, "in_stock_text"
+    if re.search(r"\bOut of stock\b|\bSold out\b", text, re.I):
+        return False, "out_of_stock_text"
+    
+    return None, "unknown"
+
 
 def _parse_description(soup: BeautifulSoup) -> str:
-    # The site uses data-testid='product_description_body'
     body = soup.select_one("[data-testid='product_description_body']")
     if body:
         desc_html = body.decode() if hasattr(body, "decode") else body.get_text(" ", strip=True)
         desc = _clean(re.sub(r"<[^>]+>", " ", desc_html))
         if len(desc) > 40:
             return desc
-    # fallback: a long paragraph near "Description"
+    # fallback
     try:
-        h = soup.find(lambda t: t.name in ("h2","h3") and re.search(r"Description", t.get_text(), re.I))
+        h = soup.find(lambda t: t.name in ("h2", "h3") and re.search(r"Description", t.get_text(), re.I))
         if h:
             sib = h.find_next_sibling()
             if sib:
@@ -490,34 +813,24 @@ def _parse_description(soup: BeautifulSoup) -> str:
         pass
     return "N/A"
 
+
 def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
     """
     Extract thumbnail URLs from Very product pages.
-    
-    Very uses URLs like:
-    https://media.very.co.uk/i/very/W7XJ1_SQ1_0000000048_NAVY_SLf?$pdp_48x64_x2$&fmt=webp
-    
-    The _SQ#_ part indicates the image sequence number (SQ1, SQ2, etc.)
-    The code before _SQ (like W7XJ1) identifies the product.
     """
     urls: List[str] = []
     html_txt = str(soup)
     
-    # First, find the main product's image code from the thumbnail carousel
-    # The carousel contains the main product images with aria-label like "Go to slide 1"
-    # or alt text like "Image thumbnail 1 of 7 of [Product Name]"
     main_product_code = None
     
-    # Strategy 1: Look in the splide carousel (thumbnail gallery)
+    # Strategy 1: Look in the splide carousel
     carousel = soup.select_one('.splide, [class*="ThumbnailCarousel"], [class*="ImageGallery"]')
     if carousel:
-        # Find first image in carousel
         for source in carousel.find_all(['source', 'img']):
             for attr in ['srcset', 'src']:
                 val = source.get(attr, '')
                 if val and 'media.very.co.uk' in val and '_SQ' in val:
                     val = html.unescape(val.split(',')[0].split()[0])
-                    # Extract product code (the part before _SQ)
                     m = re.search(r'/very/([A-Z0-9]+)_SQ', val, re.I)
                     if m:
                         main_product_code = m.group(1)
@@ -540,14 +853,11 @@ def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
     if not main_product_code:
         all_codes = re.findall(r'/very/([A-Z0-9]+)_SQ(\d+)_', html_txt, re.I)
         if all_codes:
-            # Count which product codes have multiple SQ numbers (SQ1, SQ2, etc.)
             from collections import defaultdict
             code_sq_numbers = defaultdict(set)
             for code, sq in all_codes:
                 code_sq_numbers[code.upper()].add(int(sq))
             
-            # The main product should have sequential SQ1, SQ2, SQ3...
-            # Other products (recommendations) usually only have SQ1
             best_code = None
             best_count = 0
             for code, sq_nums in code_sq_numbers.items():
@@ -559,7 +869,6 @@ def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
                 main_product_code = best_code
     
     if not main_product_code:
-        # Fallback: just take first code found
         m = re.search(r'/very/([A-Z0-9]+)_SQ\d+_', html_txt, re.I)
         if m:
             main_product_code = m.group(1)
@@ -567,13 +876,7 @@ def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
     if not main_product_code:
         return []
     
-    # Now extract all images with this product code
-    # Pattern: https://media.very.co.uk/i/very/{CODE}_SQ{N}_{REST}
-    pattern = rf'https://media\.very\.co\.uk/i/very/{main_product_code}_SQ(\d+)_[^?"\'<>\s&]+'
-    
-    found_urls = re.findall(pattern, html_txt, re.I)
-    
-    # Also check source and img tags specifically
+    # Extract all images with this product code
     for source in soup.find_all(['source', 'img']):
         for attr in ['srcset', 'src', 'data-src']:
             val = source.get(attr, '')
@@ -590,7 +893,7 @@ def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
     full_pattern = rf'https://media\.very\.co\.uk/i/very/{main_product_code}_SQ\d+_[^?"\'<>\s&]+'
     urls.extend(re.findall(full_pattern, html_txt, re.I))
     
-    # Deduplicate by base path
+    # Deduplicate
     def _base_path(u: str) -> str:
         return re.sub(r'\?.*$', '', u).lower()
     
@@ -600,33 +903,93 @@ def _extract_thumb_urls(soup: BeautifulSoup) -> List[str]:
         base = _base_path(u)
         if base not in seen:
             seen.add(base)
-            unique.append(re.sub(r'\?.*$', '', u))  # Store without query params
+            unique.append(re.sub(r'\?.*$', '', u))
     
-    # Sort by SQ number to maintain correct order
+    # Sort by SQ number
     def _sq_num(u: str) -> int:
         m = re.search(r'_SQ(\d+)_', u, re.I)
         return int(m.group(1)) if m else 9999
     
     unique.sort(key=_sq_num)
     
-    # Limit to reasonable number of images
     return unique[:10]
+
 
 # ---------------------------
 # Public API
 # ---------------------------
-def scrape_very_product(url: str, save_dir: Path = SAVE_DIR) -> Dict[str, Any]:
-    html_doc = oxy_fetch_html(url, geo="United Kingdom", timeout=90)
+def scrape_very_product(url: str, save_dir: Path = SAVE_DIR, verbose: bool = True) -> Dict[str, Any]:
+    if verbose:
+        print(f"Fetching {url}...")
+    
+    # Try to fetch HTML with retry logic
+    try:
+        html_doc = oxy_fetch_html(url, geo="United Kingdom", timeout=90, verbose=verbose)
+    except RuntimeError as e:
+        err_str = str(e)
+        
+        if "INVALID_PAGE:" in err_str:
+            reason = err_str.split("INVALID_PAGE:")[-1]
+            if verbose:
+                print(f"✗ Invalid link detected (fetch failed): {reason}")
+            
+            return {
+                "url": url,
+                "name": "INVALID LINK - Product removed or no longer available",
+                "price": "N/A",
+                "in_stock": False,
+                "stock_text": f"fetch_failed:{reason}",
+                "description": "",
+                "image_count": 0,
+                "image_urls": [],
+                "images": [],
+                "folder": None,
+                "is_invalid": True,
+                "invalid_reason": f"fetch_failed:{reason}"
+            }
+        
+        raise
+    
     soup = BeautifulSoup(html_doc, "lxml")
+    
+    # Check for invalid product page FIRST
+    is_invalid, invalid_reason = _check_invalid_product_page(soup, html_doc, url, verbose=verbose)
+    
+    if is_invalid:
+        if verbose:
+            print(f"✗ Invalid link detected: {invalid_reason}")
+        
+        return {
+            "url": url,
+            "name": "INVALID LINK - Product removed or no longer available",
+            "price": "N/A",
+            "in_stock": False,
+            "stock_text": invalid_reason,
+            "description": "",
+            "image_count": 0,
+            "image_urls": [],
+            "images": [],
+            "folder": None,
+            "is_invalid": True,
+            "invalid_reason": invalid_reason
+        }
 
     name = _parse_name(soup)
     price = _parse_price(soup)
-    in_stock = _parse_stock(soup)
+    in_stock, stock_text = _parse_stock(soup)
     description = _parse_description(soup)
+
+    if verbose:
+        print(f"  Name: {name}")
+        print(f"  Price: {price}")
+        print(f"  In Stock: {in_stock} ({stock_text})")
 
     # IMAGES
     thumb_urls = _extract_thumb_urls(soup)
     img_urls = [_to_hires(u) for u in thumb_urls]
+
+    if verbose:
+        print(f"  Images found: {len(img_urls)}")
 
     # DOWNLOAD
     folder = Path(save_dir) / f"{_safe_name(name)}_{_stable_id_from_url(url)}"
@@ -634,6 +997,9 @@ def scrape_very_product(url: str, save_dir: Path = SAVE_DIR) -> Dict[str, Any]:
 
     downloaded: List[str] = []
     if img_urls:
+        if verbose:
+            print(f"\nDownloading {len(img_urls)} images...")
+        
         s = _session_with_retries()
         s.headers.update({
             "User-Agent": UA,
@@ -654,15 +1020,16 @@ def scrape_very_product(url: str, save_dir: Path = SAVE_DIR) -> Dict[str, Any]:
                     continue
                 seen_hashes.add(h)
 
-                # save by MIME; convert weird types to jpg
                 ext = ".jpg"
                 ct = (r.headers.get("Content-Type") or "").lower()
                 ul = u.lower()
-                if "webp" in ct or ul.endswith(".webp"): ext = ".webp"
-                elif "png" in ct or ul.endswith(".png"): ext = ".png"
-                elif ul.endswith(".jpeg"): ext = ".jpeg"
+                if "webp" in ct or ul.endswith(".webp"):
+                    ext = ".webp"
+                elif "png" in ct or ul.endswith(".png"):
+                    ext = ".png"
+                elif ul.endswith(".jpeg"):
+                    ext = ".jpeg"
 
-                # If not a common image or you want guaranteed jpg, convert:
                 if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
                     data = _bytes_to_jpg(content)
                     out = folder / f"image_{i:02d}.jpg"
@@ -672,26 +1039,53 @@ def scrape_very_product(url: str, save_dir: Path = SAVE_DIR) -> Dict[str, Any]:
                     out = folder / f"image_{i:02d}{ext}"
                     with open(out, "wb") as f:
                         for chunk in r.iter_content(65536):
-                            if chunk: f.write(chunk)
+                            if chunk:
+                                f.write(chunk)
                     downloaded.append(str(out))
+                
+                if verbose:
+                    print(f"  ✓ image {i}")
+                    
             except Exception as e:
-                print(f"  ! image error: {u} ({e})")
+                if verbose:
+                    print(f"  ✗ image {i}: {e}")
 
     return {
         "url": url,
         "name": name,
         "price": price,
         "in_stock": in_stock,
+        "stock_text": stock_text,
         "description": description,
         "image_count": len(downloaded),
         "image_urls": img_urls,
         "images": downloaded,
         "folder": str(folder),
+        "is_invalid": False,
+        "invalid_reason": None
     }
+
 
 # # ---------------------------
 # # CLI
 # # ---------------------------
 # if __name__ == "__main__":
-#     test = "https://www.very.co.uk/laura-ashley-china-rose-17l-kettle/1601066433.prd"  
-#     print(json.dumps(scrape_very_product(test), indent=2, ensure_ascii=False))
+#     import sys
+    
+#     if len(sys.argv) > 1:
+#         TEST_URL = sys.argv[1]
+#     else:
+#         TEST_URL = "https://www.very.co.uk/laura-ashley-china-rose-17l-kettle/1601066433.prd"
+    
+#     print(f"\n{'='*60}")
+#     print(f"Testing: {TEST_URL}")
+#     print(f"{'='*60}\n")
+    
+#     try:
+#         data = scrape_very_product(TEST_URL, verbose=True)
+#         print("\n" + "=" * 60)
+#         print("RESULTS:")
+#         print("=" * 60)
+#         print(json.dumps(data, indent=2, ensure_ascii=False))
+#     except Exception as e:
+#         print(f"\n✗ ERROR: {e}")
