@@ -1,4 +1,7 @@
 
+
+
+
 # # next_oxylabs.py
 # # Python 3.10+
 # # pip install requests beautifulsoup4 lxml
@@ -91,6 +94,38 @@
 #     val = float(m.group(1).replace(",", ""))
 #     return val, "GBP", f"{val:.2f} GBP"
 
+# def _normalize_next_image_url(url: str) -> str:
+#     """
+#     Normalize Next CDN image URL to a consistent base form for deduplication.
+#     Removes query parameters and gets the base filename.
+    
+#     Example:
+#         Input:  https://xcdn.next.co.uk/.../F30484s.jpg?im=Resize,width=750
+#         Output: https://xcdn.next.co.uk/.../F30484s.jpg
+#     """
+#     if not url:
+#         return url
+#     # Remove query parameters
+#     base_url = url.split("?")[0]
+#     return base_url
+
+# def _get_image_key(url: str) -> str:
+#     """
+#     Get a unique key for an image URL based on the filename.
+#     This handles cases like F30484s.jpg vs F30484s2.jpg
+    
+#     Example:
+#         Input:  https://xcdn.next.co.uk/.../F30484s.jpg?im=Resize,width=750
+#         Output: f30484s.jpg
+#     """
+#     if not url:
+#         return ""
+#     # Get the base URL without query params
+#     base_url = url.split("?")[0]
+#     # Extract just the filename
+#     filename = base_url.rstrip("/").split("/")[-1].lower()
+#     return filename
+
 # # ---------------------------
 # # Oxylabs HTML fetch
 # # ---------------------------
@@ -102,7 +137,6 @@
 #         "render": "html",
 #         "geo_location": geo,
 #         "headers": {"User-Agent": UA, "Accept-Language": ACCEPT_LANG},
-#         # "premium": True,  # uncomment if your plan supports it
 #     }
 #     sess = _session_with_retries()
 #     last = None
@@ -193,32 +227,52 @@
 #     # Add-to-bag heuristic fallback
 #     if in_stock is None:
 #         body = _clean(soup.get_text(" ", strip=True)).lower()
-#         if "add to bag" in body or "add to bag" in body:
+#         if "add to bag" in body:
 #             in_stock = True
 #         elif "out of stock" in body:
 #             in_stock = False
 
-#     # Images from carousel
+#     # Images from carousel - FIXED: proper deduplication
 #     images: List[str] = []
-#     for img in soup.select("#pdp-image-carousel img, [data-testid='image-gallery'] img"):
-#         src = img.get("data-src") or img.get("data-fallback-src") or img.get("src") or ""
+#     seen_keys: set = set()
+    
+#     # Strategy 1: Get images from the carousel (data-testid="image-carousel-slide")
+#     for img in soup.select('[data-testid="image-carousel-slide"], #pdp-image-carousel img'):
+#         # Only use the src attribute (primary image), not srcset
+#         src = img.get("src") or ""
+#         if not src:
+#             continue
+        
 #         src = _absolutize(src, page_url)
-#         if src.startswith("http"):
-#             images.append(src.split("?")[0])
-
-#     # Dedup
-#     seen = set()
-#     deduped = []
-#     for u in images:
-#         if u not in seen:
-#             seen.add(u); deduped.append(u)
+#         if not src.startswith("http"):
+#             continue
+        
+#         # Normalize and deduplicate
+#         normalized = _normalize_next_image_url(src)
+#         key = _get_image_key(src)
+        
+#         if key and key not in seen_keys:
+#             seen_keys.add(key)
+#             images.append(normalized)
+    
+#     # Strategy 2: Fallback to other image selectors if no images found
+#     if not images:
+#         for img in soup.select('[data-testid="image-gallery"] img'):
+#             src = img.get("data-src") or img.get("data-fallback-src") or img.get("src") or ""
+#             src = _absolutize(src, page_url)
+#             if src.startswith("http"):
+#                 normalized = _normalize_next_image_url(src)
+#                 key = _get_image_key(src)
+#                 if key and key not in seen_keys:
+#                     seen_keys.add(key)
+#                     images.append(normalized)
 
 #     return {
 #         "name": name,
 #         "price": price or "N/A",
 #         "in_stock": in_stock,
 #         "description": description,
-#         "image_urls": deduped
+#         "image_urls": images
 #     }
 
 # # ---------------------------
@@ -260,40 +314,54 @@
 #     return data
 
 # # ---------------------------
-# # Image discovery: brute-force (Next CDN pattern)
+# # Image discovery: brute-force (Next CDN pattern) - DISABLED
+# # The carousel already contains all images, brute-force causes duplicates
 # # ---------------------------
-# def brute_force_next_images(seed_images: List[str], max_brute_force: int = 20) -> List[str]:
-#     if not seed_images:
+# def brute_force_next_images(seed_images: List[str], max_brute_force: int = 0) -> List[str]:
+#     """
+#     Brute-force discover additional CDN images.
+#     NOTE: Disabled by default (max_brute_force=0) because the carousel 
+#     already contains all images and brute-force causes duplicates.
+#     """
+#     if not seed_images or max_brute_force <= 0:
 #         return seed_images
+    
 #     # Detect base code from first image
-#     m = re.search(r"/([A-Z]{1,2}\d+s?)\d*", seed_images[0], re.IGNORECASE)
+#     m = re.search(r"/([A-Z]{1,2}\d+)s?(\d*)\.jpg", seed_images[0], re.IGNORECASE)
 #     if not m:
 #         return seed_images
+    
 #     base_code = m.group(1)
-
+    
+#     # Get existing image numbers to avoid duplicates
+#     existing_nums = set()
+#     for img in seed_images:
+#         m2 = re.search(rf"{base_code}s(\d*)\.jpg", img, re.IGNORECASE)
+#         if m2:
+#             num = m2.group(1)
+#             existing_nums.add(int(num) if num else 1)
+    
 #     out = seed_images[:]
 #     sess = _session_with_retries()
+    
 #     for i in range(1, max_brute_force + 1):
+#         if i in existing_nums:
+#             continue  # Already have this image
+            
 #         suffix = "" if i == 1 else str(i)
-#         test_url = f"https://xcdn.next.co.uk/common/items/default/default/itemimages/3_4Ratio/product/lge/{base_code}{suffix}.jpg"
-#         if test_url in out:
-#             continue
+#         test_url = f"https://xcdn.next.co.uk/common/items/default/default/itemimages/3_4Ratio/product/lge/{base_code}s{suffix}.jpg"
+        
 #         try:
 #             h = sess.head(test_url, timeout=5)
 #             if h.status_code == 200:
 #                 out.append(test_url)
-#             else:
-#                 # stop early if sequence ends
-#                 if i > 1:
-#                     break
+#             elif i > len(existing_nums) + 2:
+#                 # Stop if we've gone past expected count
+#                 break
 #         except Exception:
 #             break
-#     # dedupe
-#     seen, deduped = set(), []
-#     for u in out:
-#         if u not in seen:
-#             seen.add(u); deduped.append(u)
-#     return deduped
+    
+#     return out
 
 # # ---------------------------
 # # Image download
@@ -332,14 +400,14 @@
 # # ---------------------------
 # def scrape_next_with_oxylabs(url: str,
 #                              download_images_flag: bool = True,
-#                              max_brute_force: int = 20,
+#                              max_brute_force: int = 0,  # Disabled by default
 #                              max_images: Optional[int] = None,
 #                              geo: str = "United Kingdom") -> Dict[str, Any]:
 #     html = oxy_fetch_html(url, geo=geo)
 #     parsed = parse_next(html, page_url=url)
 #     parsed = next_api_enrich(url, parsed)
 
-#     # Brute-force discover more CDN images
+#     # Brute-force is disabled by default (causes duplicates)
 #     imgs_all = brute_force_next_images(parsed["image_urls"], max_brute_force=max_brute_force)
 
 #     safe_name = _safe_name(parsed["name"] if parsed["name"] != "N/A" else "Unknown_Product")
@@ -347,17 +415,19 @@
 
 #     images_downloaded: List[str] = []
 #     if download_images_flag and imgs_all:
+#         print(f"Downloading {len(imgs_all)} images...")
 #         images_downloaded = download_images(imgs_all, folder, referer=url, max_images=max_images)
 
 #     return {
+#         "url": url,
 #         "name": parsed["name"] or "N/A",
 #         "price": parsed["price"] or "N/A",
 #         "in_stock": parsed["in_stock"],
 #         "description": parsed["description"] or "N/A",
 #         "image_count": len(images_downloaded) if images_downloaded else len(imgs_all),
-#         "images": images_downloaded if images_downloaded else imgs_all,
+#         "image_urls": imgs_all,
+#         "images": images_downloaded if images_downloaded else [],
 #         "folder": str(folder),
-#         "url": url,
 #         "mode": "oxylabs-universal"
 #     }
 
@@ -365,10 +435,9 @@
 # # CLI
 # # ---------------------------
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.next.co.uk/style/su620644/f30484"  
-#     data = scrape_next_with_oxylabs(TEST_URL, download_images_flag=True, max_brute_force=20, max_images=20)
+#     TEST_URL = "https://www.next.co.uk/style/su620644/f30484#f30484"  
+#     data = scrape_next_with_oxylabs(TEST_URL, download_images_flag=True, max_brute_force=0, max_images=20)
 #     print(json.dumps(data, indent=2, ensure_ascii=False))
-
 
 
 
@@ -378,6 +447,7 @@
 # next_oxylabs.py
 # Python 3.10+
 # pip install requests beautifulsoup4 lxml
+# Version: 2.1 - Added invalid link detection
 
 from __future__ import annotations
 import os, re, json, time
@@ -390,11 +460,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
+__version__ = "2.1"
+
 # ---------------------------
 # Credentials (oxylabs_secrets.py or env)
 # ---------------------------
 try:
-    from oxylabs_secrets import OXY_USER, OXY_PASS  # optional helper file
+    from oxylabs_secrets import OXY_USER, OXY_PASS
 except Exception:
     OXY_USER = os.getenv("OXY_USER") or os.getenv("OXYLABS_USERNAME", "")
     OXY_PASS = os.getenv("OXY_PASS") or os.getenv("OXYLABS_PASSWORD", "")
@@ -471,38 +543,130 @@ def _normalize_next_image_url(url: str) -> str:
     """
     Normalize Next CDN image URL to a consistent base form for deduplication.
     Removes query parameters and gets the base filename.
-    
-    Example:
-        Input:  https://xcdn.next.co.uk/.../F30484s.jpg?im=Resize,width=750
-        Output: https://xcdn.next.co.uk/.../F30484s.jpg
     """
     if not url:
         return url
-    # Remove query parameters
     base_url = url.split("?")[0]
     return base_url
 
 def _get_image_key(url: str) -> str:
     """
     Get a unique key for an image URL based on the filename.
-    This handles cases like F30484s.jpg vs F30484s2.jpg
-    
-    Example:
-        Input:  https://xcdn.next.co.uk/.../F30484s.jpg?im=Resize,width=750
-        Output: f30484s.jpg
     """
     if not url:
         return ""
-    # Get the base URL without query params
     base_url = url.split("?")[0]
-    # Extract just the filename
     filename = base_url.rstrip("/").split("/")[-1].lower()
     return filename
+
+
+# ---------------------------
+# Invalid Link Detection
+# ---------------------------
+def _check_invalid_product_page(soup: BeautifulSoup, html: str, url: str, verbose: bool = False) -> Tuple[bool, str]:
+    """
+    Check if a Next product URL has redirected to a category/error page.
+    Returns (is_invalid, reason) tuple.
+    """
+    body_text = _clean(soup.get_text(" ", strip=True)).lower() if soup.body else ""
+    
+    # Check 1: PLP (Product Listing Page) indicators
+    plp_selectors = [
+        "[data-testid='plp-results-title-wrapper']",
+        "[data-testid='plp-results-title-container']",
+        "[data-testid='plp-product-title']",
+        "[data-testid='plp-header-wrapper']",
+        ".plp-1eroud2",
+        "[class*='plp-']",
+    ]
+    for sel in plp_selectors:
+        el = soup.select_one(sel)
+        if el:
+            title_el = soup.select_one("[data-testid='plp-product-title'] h1, #plp-seo-heading h1")
+            category = _clean(title_el.get_text()) if title_el else "unknown"
+            if verbose:
+                print(f"  ⚠ INVALID: Category/listing page detected - '{category}'")
+            return True, f"category_page:{category}"
+    
+    # Check 2: Product count indicator (e.g., "(142)")
+    count_el = soup.select_one(".esi-count, [class*='product-count']")
+    if count_el:
+        count_text = _clean(count_el.get_text())
+        if re.search(r"\(\d+\)", count_text):
+            if verbose:
+                print(f"  ⚠ INVALID: Product count found - '{count_text}'")
+            return True, f"product_listing:{count_text}"
+    
+    # Check 3: Search results page
+    if "/search?" in url.lower() or "search results" in body_text:
+        if verbose:
+            print(f"  ⚠ INVALID: Search results page")
+        return True, "search_results_page"
+    
+    # Check 4: 404/error page indicators
+    error_patterns = [
+        "page not found",
+        "product not found",
+        "sorry, we can't find",
+        "this page doesn't exist",
+        "this product is no longer available",
+        "has been removed",
+        "no longer available",
+        "404",
+    ]
+    for pattern in error_patterns:
+        if pattern in body_text:
+            if verbose:
+                print(f"  ⚠ INVALID: Error pattern found - '{pattern}'")
+            return True, f"error_message:{pattern[:30]}"
+    
+    # Check 5: Error page elements
+    error_selectors = [
+        ".error-page", "#error-page", ".not-found", "#not-found",
+        "[class*='ErrorPage']", "[class*='NotFound']", "[class*='404']"
+    ]
+    for sel in error_selectors:
+        if soup.select_one(sel):
+            if verbose:
+                print(f"  ⚠ INVALID: Error page element found - '{sel}'")
+            return True, f"error_element:{sel}"
+    
+    # Check 6: No product-specific elements but has product grid
+    has_product_name = bool(soup.select_one('[data-testid*="product-name"], [data-testid*="ProductName"]'))
+    has_add_to_bag = bool(soup.find(string=re.compile(r"add to bag", re.I)))
+    has_carousel = bool(soup.select_one('[data-testid="image-carousel-slide"], #pdp-image-carousel'))
+    
+    product_cards = soup.select("[data-testid*='product-card'], [class*='ProductCard'], .product-tile")
+    if len(product_cards) >= 3 and not (has_product_name or has_carousel):
+        if verbose:
+            print(f"  ⚠ INVALID: Multiple product cards found ({len(product_cards)}), no PDP elements")
+        return True, f"product_grid:{len(product_cards)}_items"
+    
+    # Check 7: Generic category title without product details
+    h1 = soup.select_one("h1")
+    if h1:
+        h1_text = _clean(h1.get_text()).lower()
+        category_keywords = [
+            "kettles", "toasters", "microwaves", "coffee machines",
+            "dresses", "tops", "jeans", "shoes", "bags", "jackets",
+            "sofas", "beds", "tables", "chairs", "curtains",
+            "toys", "games", "electronics", "homeware",
+            "women", "men", "kids", "home", "garden", "sale"
+        ]
+        for keyword in category_keywords:
+            if h1_text == keyword or (h1_text.startswith(keyword) and len(h1_text) < 30):
+                if not (has_add_to_bag or has_carousel):
+                    if verbose:
+                        print(f"  ⚠ INVALID: Generic category title - '{h1_text}'")
+                    return True, f"category_title:{h1_text}"
+    
+    return False, "valid"
+
 
 # ---------------------------
 # Oxylabs HTML fetch
 # ---------------------------
-def oxy_fetch_html(url: str, geo: str = "United Kingdom", timeout: int = 90) -> str:
+def oxy_fetch_html(url: str, geo: str = "United Kingdom", timeout: int = 90, verbose: bool = False) -> str:
     url, _ = urldefrag(url)
     payload = {
         "source": "universal",
@@ -514,6 +678,8 @@ def oxy_fetch_html(url: str, geo: str = "United Kingdom", timeout: int = 90) -> 
     sess = _session_with_retries()
     last = None
     for i in range(3):
+        if verbose:
+            print(f"  Attempt {i + 1}/3...")
         try:
             r = sess.post("https://realtime.oxylabs.io/v1/queries",
                           auth=(OXY_USER, OXY_PASS), json=payload, timeout=timeout)
@@ -522,17 +688,34 @@ def oxy_fetch_html(url: str, geo: str = "United Kingdom", timeout: int = 90) -> 
             html = data["results"][0]["content"]
             if "<html" not in html.lower():
                 raise RuntimeError("Oxylabs returned non-HTML content")
+            if verbose:
+                print(f"  ✓ Fetched {len(html):,} bytes")
             return html
         except Exception as e:
             last = e
             time.sleep(1.5 ** (i + 1))
     raise RuntimeError(f"Oxylabs HTML fetch failed: {last}")
 
+
 # ---------------------------
 # Parse Next PDP
 # ---------------------------
-def parse_next(html: str, page_url: str) -> Dict[str, Any]:
+def parse_next(html: str, page_url: str, verbose: bool = False) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "lxml")
+    
+    # Check for invalid product page FIRST
+    is_invalid, invalid_reason = _check_invalid_product_page(soup, html, page_url, verbose=verbose)
+    
+    if is_invalid:
+        return {
+            "name": "INVALID LINK - Product removed or redirected",
+            "price": "N/A",
+            "in_stock": False,
+            "description": "",
+            "image_urls": [],
+            "is_invalid": True,
+            "invalid_reason": invalid_reason
+        }
 
     # JSON-LD (Product)
     product_ld: Optional[dict] = None
@@ -605,13 +788,11 @@ def parse_next(html: str, page_url: str) -> Dict[str, Any]:
         elif "out of stock" in body:
             in_stock = False
 
-    # Images from carousel - FIXED: proper deduplication
+    # Images from carousel - proper deduplication
     images: List[str] = []
     seen_keys: set = set()
     
-    # Strategy 1: Get images from the carousel (data-testid="image-carousel-slide")
     for img in soup.select('[data-testid="image-carousel-slide"], #pdp-image-carousel img'):
-        # Only use the src attribute (primary image), not srcset
         src = img.get("src") or ""
         if not src:
             continue
@@ -620,7 +801,6 @@ def parse_next(html: str, page_url: str) -> Dict[str, Any]:
         if not src.startswith("http"):
             continue
         
-        # Normalize and deduplicate
         normalized = _normalize_next_image_url(src)
         key = _get_image_key(src)
         
@@ -628,7 +808,6 @@ def parse_next(html: str, page_url: str) -> Dict[str, Any]:
             seen_keys.add(key)
             images.append(normalized)
     
-    # Strategy 2: Fallback to other image selectors if no images found
     if not images:
         for img in soup.select('[data-testid="image-gallery"] img'):
             src = img.get("data-src") or img.get("data-fallback-src") or img.get("src") or ""
@@ -645,14 +824,20 @@ def parse_next(html: str, page_url: str) -> Dict[str, Any]:
         "price": price or "N/A",
         "in_stock": in_stock,
         "description": description,
-        "image_urls": images
+        "image_urls": images,
+        "is_invalid": False,
+        "invalid_reason": None
     }
+
 
 # ---------------------------
 # Next unofficial Product API fallback
 # ---------------------------
 def next_api_enrich(url: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    # Try to find product code in URL (patterns like "C12345" or "AB12345")
+    # Skip if already invalid
+    if data.get("is_invalid"):
+        return data
+    
     m = re.search(r"([A-Z]{1,2}\d{4,}s?)", url, re.IGNORECASE)
     if not m:
         return data
@@ -686,27 +871,24 @@ def next_api_enrich(url: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
     return data
 
+
 # ---------------------------
-# Image discovery: brute-force (Next CDN pattern) - DISABLED
-# The carousel already contains all images, brute-force causes duplicates
+# Image discovery: brute-force (disabled by default)
 # ---------------------------
 def brute_force_next_images(seed_images: List[str], max_brute_force: int = 0) -> List[str]:
     """
     Brute-force discover additional CDN images.
-    NOTE: Disabled by default (max_brute_force=0) because the carousel 
-    already contains all images and brute-force causes duplicates.
+    Disabled by default because carousel already contains all images.
     """
     if not seed_images or max_brute_force <= 0:
         return seed_images
     
-    # Detect base code from first image
     m = re.search(r"/([A-Z]{1,2}\d+)s?(\d*)\.jpg", seed_images[0], re.IGNORECASE)
     if not m:
         return seed_images
     
     base_code = m.group(1)
     
-    # Get existing image numbers to avoid duplicates
     existing_nums = set()
     for img in seed_images:
         m2 = re.search(rf"{base_code}s(\d*)\.jpg", img, re.IGNORECASE)
@@ -719,7 +901,7 @@ def brute_force_next_images(seed_images: List[str], max_brute_force: int = 0) ->
     
     for i in range(1, max_brute_force + 1):
         if i in existing_nums:
-            continue  # Already have this image
+            continue
             
         suffix = "" if i == 1 else str(i)
         test_url = f"https://xcdn.next.co.uk/common/items/default/default/itemimages/3_4Ratio/product/lge/{base_code}s{suffix}.jpg"
@@ -729,17 +911,17 @@ def brute_force_next_images(seed_images: List[str], max_brute_force: int = 0) ->
             if h.status_code == 200:
                 out.append(test_url)
             elif i > len(existing_nums) + 2:
-                # Stop if we've gone past expected count
                 break
         except Exception:
             break
     
     return out
 
+
 # ---------------------------
 # Image download
 # ---------------------------
-def download_images(urls: List[str], folder: Path, referer: str, max_images: Optional[int] = None) -> List[str]:
+def download_images(urls: List[str], folder: Path, referer: str, max_images: Optional[int] = None, verbose: bool = True) -> List[str]:
     if max_images is not None:
         urls = urls[:max_images]
     folder.mkdir(parents=True, exist_ok=True)
@@ -764,23 +946,50 @@ def download_images(urls: List[str], folder: Path, referer: str, max_images: Opt
                     if chunk:
                         f.write(chunk)
             saved.append(str(out))
+            if verbose:
+                print(f"  ✓ image {i} ({out.name})")
         except Exception as e:
-            print(f"  ! image download failed: {u} ({e})")
+            if verbose:
+                print(f"  ✗ image {i}: {e}")
     return saved
+
 
 # ---------------------------
 # Public API
 # ---------------------------
 def scrape_next_with_oxylabs(url: str,
                              download_images_flag: bool = True,
-                             max_brute_force: int = 0,  # Disabled by default
+                             max_brute_force: int = 0,
                              max_images: Optional[int] = None,
-                             geo: str = "United Kingdom") -> Dict[str, Any]:
-    html = oxy_fetch_html(url, geo=geo)
-    parsed = parse_next(html, page_url=url)
+                             geo: str = "United Kingdom",
+                             verbose: bool = True) -> Dict[str, Any]:
+    if verbose:
+        print(f"Fetching {url}...")
+    
+    html = oxy_fetch_html(url, geo=geo, verbose=verbose)
+    parsed = parse_next(html, page_url=url, verbose=verbose)
+    
+    # Check if invalid link was detected
+    if parsed.get("is_invalid"):
+        if verbose:
+            print(f"✗ Invalid link detected: {parsed.get('invalid_reason')}")
+        return {
+            "url": url,
+            "name": parsed["name"],
+            "price": "N/A",
+            "in_stock": False,
+            "description": "",
+            "image_count": 0,
+            "image_urls": [],
+            "images": [],
+            "folder": None,
+            "mode": "oxylabs-universal",
+            "is_invalid": True,
+            "invalid_reason": parsed.get("invalid_reason")
+        }
+    
     parsed = next_api_enrich(url, parsed)
 
-    # Brute-force is disabled by default (causes duplicates)
     imgs_all = brute_force_next_images(parsed["image_urls"], max_brute_force=max_brute_force)
 
     safe_name = _safe_name(parsed["name"] if parsed["name"] != "N/A" else "Unknown_Product")
@@ -788,8 +997,15 @@ def scrape_next_with_oxylabs(url: str,
 
     images_downloaded: List[str] = []
     if download_images_flag and imgs_all:
-        print(f"Downloading {len(imgs_all)} images...")
-        images_downloaded = download_images(imgs_all, folder, referer=url, max_images=max_images)
+        if verbose:
+            print(f"\nDownloading {len(imgs_all)} images...")
+        images_downloaded = download_images(imgs_all, folder, referer=url, max_images=max_images, verbose=verbose)
+
+    if verbose:
+        print(f"\n  Name: {parsed['name']}")
+        print(f"  Price: {parsed['price']}")
+        print(f"  In Stock: {parsed['in_stock']}")
+        print(f"  Images: {len(images_downloaded)}")
 
     return {
         "url": url,
@@ -800,14 +1016,34 @@ def scrape_next_with_oxylabs(url: str,
         "image_count": len(images_downloaded) if images_downloaded else len(imgs_all),
         "image_urls": imgs_all,
         "images": images_downloaded if images_downloaded else [],
-        "folder": str(folder),
-        "mode": "oxylabs-universal"
+        "folder": str(folder) if images_downloaded else None,
+        "mode": "oxylabs-universal",
+        "is_invalid": False,
+        "invalid_reason": None
     }
+
 
 # # ---------------------------
 # # CLI
 # # ---------------------------
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.next.co.uk/style/su620644/f30484"  
-#     data = scrape_next_with_oxylabs(TEST_URL, download_images_flag=True, max_brute_force=0, max_images=20)
-#     print(json.dumps(data, indent=2, ensure_ascii=False))
+#     import sys
+    
+#     if len(sys.argv) > 1:
+#         TEST_URL = sys.argv[1]
+#     else:
+#         # Test with an invalid/redirected URL
+#         TEST_URL = "https://www.next.co.uk/style/su620644/f30484#f30484"
+    
+#     print(f"\n{'='*60}")
+#     print(f"Testing: {TEST_URL}")
+#     print(f"{'='*60}\n")
+    
+#     try:
+#         data = scrape_next_with_oxylabs(TEST_URL, download_images_flag=True, max_brute_force=0, max_images=20)
+#         print("\n" + "=" * 60)
+#         print("RESULTS:")
+#         print("=" * 60)
+#         print(json.dumps(data, indent=2, ensure_ascii=False))
+#     except Exception as e:
+        # print(f"\n✗ ERROR: {e}")

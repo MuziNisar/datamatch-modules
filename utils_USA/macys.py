@@ -881,7 +881,7 @@ def scrape_macys(url: str, headless: bool = False, country_code: Optional[str] =
 # # =============================
 # if __name__ == "__main__":
 #     test_urls = [
-#         "https://www.macys.com/shop/product/laura-ashley-china-rose-4-slice-toaster?ID=18299607",
+#         "https://www.macys.com/shop/product/laura-ashley-floral-print-5-speed-300-watt-hand-mixer?ID=21262908&swatchColor=Elveden%20Navy",
 #     ]
 
 #     print(json.dumps(scrape_macys_oxylabs(test_urls[0], max_images=20, verbose=True), indent=2, ensure_ascii=False))

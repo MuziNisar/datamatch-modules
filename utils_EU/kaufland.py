@@ -561,6 +561,6 @@ def scrape_kaufland_with_oxylabs(url: str,
 # # CLI
 # # =========================
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.kaufland.de/product/524728348/"
+#     TEST_URL = "https://www.kaufland.de/product/533173230/"
 #     data = scrape_kaufland_with_oxylabs(TEST_URL, download_images_flag=True, max_images=20)
 #     print(json.dumps(data, indent=2, ensure_ascii=False))

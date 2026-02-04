@@ -1172,7 +1172,7 @@ def scrape_allegro_oxylabs(url: str) -> Dict:
 
 # # ---------- run ONE hardcoded URL ----------
 # if __name__ == "__main__":
-#     URL = "https://allegro.pl/oferta/laura-ashley-elveden-granatowy-czajnik-z-gwizdkiem-gaz-indukcja-2-5-l-17532527096"
+#     URL = "https://allegro.pl/oferta/vq-laura-ashley-toster-2-plastrowy-stalowy-vintage-z-funkcja-podgrzewania-17372283850"
 #     print(json.dumps(scrape_allegro_oxylabs(URL), indent=2, ensure_ascii=False))
     
 #     # Print any failed job IDs at the end

@@ -1324,7 +1324,7 @@ def scrape_wilko_oxylabs(
 #     # Default test URLs
 #     TEST_URLS = [
 #         # Category URL (should be invalid)
-#         "https://www.wilko.com/en-uk/stationery-office/computer-mobile-tablet/mobile-phone-tablet-accessories/c/1000",
+#         "https://www.wilko.com/en-uk/vq-retro-mini-black-dab-digital-radio/p/0637021",
 #         # Valid product URL
 #         # "https://www.wilko.com/en-uk/vq-skylark-bees-earbuds/p/0637036",
 #     ]

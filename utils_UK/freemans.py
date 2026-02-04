@@ -1074,7 +1074,7 @@ def fetch_freemans_product_with_oxylabs(url: str, verbose: bool = True) -> Dict[
 #         TEST_URL = sys.argv[1]
 #     else:
 #         # Test with a potentially invalid URL
-#         TEST_URL = "https://www.freemans.com/products/laura-ashley-elveden-white-4-slice-toaster/_/A-77X974_?searchResults=true&PFM_rsn=search&PFM_ref=true&PFM_psp=own&PFM_pge=1&PFM_lpn=9&PFM_trm=laura+ashley"
+#         TEST_URL = "https://www.freemans.com/products/laura-ashley-bread-bin-by-vq-elveden-navy/_/A-36B862_?"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")

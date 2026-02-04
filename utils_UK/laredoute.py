@@ -1582,7 +1582,7 @@ def scrape_laredoute_with_oxylabs(
 #     if len(sys.argv) > 1:
 #         TEST_URL = sys.argv[1]
 #     else:
-#         TEST_URL = "https://www.laredoute.co.uk/ppdp/prod-350344450.aspx#searchkeyword=LAURA%20ASHLEY&shoppingtool=search"
+#         TEST_URL = "https://www.laredoute.co.uk/ppdp/prod-350344451.aspx#headerSearchContainer&searchkeyword=Laura%20ashley&shoppingtool=search"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")

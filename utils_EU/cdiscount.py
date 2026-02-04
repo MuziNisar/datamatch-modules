@@ -600,33 +600,94 @@ def _extract_name_from_soup(soup: BeautifulSoup) -> str:
     return _clean((title or "").split("|")[0]) or "Unknown_Product"
 
 def _extract_price_from_soup(soup: BeautifulSoup) -> Tuple[str, str]:
-    tag = soup.select_one("[itemprop='price'][content]")
-    if tag:
-        val = (tag.get("content") or "").replace(" ", "").replace("\u202f","").replace(",", ".")
-        if val: return f"{val} EUR", "onsite"
-
-    wrap = soup.select_one("div.c-buybox__price")
-    if wrap:
-        got = _parse_price_text_block(_clean(wrap.get_text(" ", strip=True)))
-        if got: return got, "onsite"
-
+    """
+    Extract price from Cdiscount page using multiple strategies.
+    Priority: JSON-LD > itemprop > data-e2e > styled components > buybox
+    """
+    
+    # Strategy 1: JSON-LD schema (MOST RELIABLE - has exact price)
     for tag in soup.select("script[type='application/ld+json']"):
         raw = tag.string or tag.get_text()
-        if not raw: continue
+        if not raw:
+            continue
         try:
             data = json.loads(raw)
         except Exception:
-            try: data = json.loads(raw.strip().rstrip(","))
-            except Exception: continue
+            try:
+                data = json.loads(raw.strip().rstrip(","))
+            except Exception:
+                continue
+        
         objs = data if isinstance(data, list) else [data]
         for obj in objs:
-            if isinstance(obj, dict) and obj.get("@type") in ("Product",):
+            if isinstance(obj, dict) and obj.get("@type") in ("Product", "product"):
                 offers = obj.get("offers") or {}
-                if isinstance(offers, list): offers = offers[0] if offers else {}
-                p = offers.get("price"); curr = (offers.get("priceCurrency") or "").upper() or "EUR"
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else {}
+                p = offers.get("price")
+                curr = (offers.get("priceCurrency") or "").upper() or "EUR"
                 if p is not None:
-                    pv = str(p).replace(",", ".")
-                    return _clean(f"{pv} {curr}"), "jsonld"
+                    # Ensure we keep decimal places
+                    if isinstance(p, float):
+                        pv = f"{p:.2f}"
+                    else:
+                        pv = str(p).replace(",", ".")
+                    return f"{pv} {curr}", "jsonld"
+
+    # Strategy 2: itemprop='price' with content attribute
+    tag = soup.select_one("[itemprop='price'][content]")
+    if tag:
+        val = (tag.get("content") or "").replace(" ", "").replace("\u202f", "").replace(",", ".")
+        if val:
+            return f"{val} EUR", "itemprop"
+
+    # Strategy 3: New Cdiscount structure with data-e2e='price'
+    price_div = soup.select_one("[data-e2e='price']")
+    if price_div:
+        # Get ALL text content including from nested elements
+        price_text = price_div.get_text(" ", strip=True)
+        # Clean up: remove extra spaces, normalize
+        price_text = re.sub(r'\s+', ' ', price_text).strip()
+        price_text = price_text.replace("\u202f", "").replace("\xa0", "")
+        
+        # Try to extract price with decimals: €79.99 or 79.99€ or € 79.99
+        # Pattern for euro followed by number with optional decimals
+        match = re.search(r'€\s*(\d+[.,]\d{2})', price_text)
+        if match:
+            num = match.group(1).replace(",", ".")
+            return f"{num} EUR", "data-e2e"
+        
+        # Pattern for number with decimals followed by euro
+        match = re.search(r'(\d+[.,]\d{2})\s*€', price_text)
+        if match:
+            num = match.group(1).replace(",", ".")
+            return f"{num} EUR", "data-e2e"
+        
+        # Fallback: try to find any price-like number
+        match = re.search(r'(\d+[.,]?\d*)', price_text)
+        if match:
+            num = match.group(1).replace(",", ".")
+            return f"{num} EUR", "data-e2e"
+
+    # Strategy 4: Look for price in styled components
+    for selector in [
+        "div[class*='price'] span",
+        "div[class*='Price'] span",
+        "[class*='buybox'] [class*='price']",
+    ]:
+        for elem in soup.select(selector):
+            text = elem.get_text(" ", strip=True)
+            if "€" in text or "eur" in text.lower():
+                got = _parse_price_text_block(text)
+                if got:
+                    return got, "styled-component"
+
+    # Strategy 5: Old buybox structure
+    wrap = soup.select_one("div.c-buybox__price")
+    if wrap:
+        got = _parse_price_text_block(_clean(wrap.get_text(" ", strip=True)))
+        if got:
+            return got, "buybox"
 
     return "N/A", "none"
 

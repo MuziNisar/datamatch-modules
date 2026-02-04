@@ -1009,7 +1009,7 @@ def scrape_ao_with_oxylabs(
 #     # Test URLs
 #     TEST_URLS = [
 #         # Product URL (may be out of stock)
-#         "https://ao.com/product/vqsbpkk336laew-laura-ashley-kettle-white-103106-78.aspx",
+#         "https://ao.com/product/vqsbpkk336laen-laura-ashley-kettle-blue-103104-78.aspx",
 #     ]
     
 #     if len(sys.argv) > 1:

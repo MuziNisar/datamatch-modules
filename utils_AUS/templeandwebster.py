@@ -475,6 +475,6 @@ def scrape_templeandwebster(url: str, max_images: Optional[int] = None, geo: str
 # # CLI
 # # =========================
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.templeandwebster.com.au/Laura-Ashley-Elveden-1.7L-Dome-Kettle-LAUE1152.html"
+#     TEST_URL = "https://www.templeandwebster.com.au/China-Rose-4-Slice-Stainless-Steel-Toaster-LAUE1100.html"
 #     data = scrape_templeandwebster(TEST_URL, max_images=12, geo="Australia")
 #     print(json.dumps(data, indent=2, ensure_ascii=False))
