@@ -1,7 +1,7 @@
 {
-  "version": "1.0.4",
+  "version": "1.0.5",
   "release_date": "2026-03-21",
-  "changelog": "Fixed general errors",
+  "changelog": "Fixed Harveyneuman",
   "modules": {
     "utils_UK/ao.py": "c8d3a26602f519ddcc4f34323fd4b951",
     "utils_UK/argos.py": "aa30aea1ff2fd38e675a2bfbeaa2cecb",
@@ -41,7 +41,7 @@
     "utils_USA/zola.py": "36d6c513f781e4a5e22072274afe388e",
     "utils_USA/__init__.py": "d41d8cd98f00b204e9800998ecf8427e",
     "utils_AUS/binglee.py": "cfd86a610fe8fbb8b5e515c2823b47d8",
-    "utils_AUS/harveynorman.py": "9edfb2079a3c8abf649f45bc428665ad",
+    "utils_AUS/harveynorman.py": "b44f495e46a985747f93b4f289ca582b",
     "utils_AUS/kgelectronic.py": "91ed724d5aa5937f51e9e1a190267c88",
     "utils_AUS/kitchenwre.py": "306bc01a6ae92747825242f72546a258",
     "utils_AUS/nightingale.py": "bf42a04d69036a9dff8e2b8b803c27df",

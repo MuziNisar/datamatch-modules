@@ -1430,21 +1430,70 @@ def _extract_name(soup: BeautifulSoup) -> str:
     return "Unknown Product"
 
 
+# def _extract_price_dom(soup: BeautifulSoup) -> Tuple[Optional[str], str]:  # BACKUP — old PriceCard selector; heuristic body scan matched $1 before $179
+#     wrap = soup.select_one("div[class*='PriceCard_sf-price-card']")
+#     if wrap:
+#         m = _parse_money(wrap.get_text(" ", strip=True))
+#         if m:
+#             return m, "PriceCard"
+#     meta_price = soup.select_one("meta[itemprop='price']")
+#     if meta_price and meta_price.get("content"):
+#         m = _parse_money(meta_price["content"])
+#         if m:
+#             return m, "meta[itemprop=price]"
+#     bodytxt = _clean(soup.get_text(" ", strip=True))
+#     m = _parse_money(bodytxt)
+#     if m:
+#         return m, "heuristic"
+#     return None, "none"
+
 def _extract_price_dom(soup: BeautifulSoup) -> Tuple[Optional[str], str]:
+    # 1) New GelSlab price UI: data-testid="price-display" with aria-label spans
+    #    <span aria-label="Currency: $"> + <span aria-label="Amount: 179">
+    price_block = soup.select_one("[data-testid='price-display']")
+    if price_block:
+        amt_span = price_block.select_one("span[aria-label^='Amount:']")
+        cur_span = price_block.select_one("span[aria-label^='Currency:']")
+        if amt_span:
+            amt_label = amt_span.get("aria-label", "")  # "Amount: 179"
+            amt = re.search(r"Amount:\s*([\d,]+(?:\.\d{2})?)", amt_label)
+            cur = "$"
+            if cur_span:
+                cur_label = cur_span.get("aria-label", "")  # "Currency: $"
+                cm = re.search(r"Currency:\s*(.+)", cur_label)
+                if cm:
+                    cur = cm.group(1).strip()
+            if amt:
+                dollars = amt.group(1).replace(",", "")
+                return f"{cur}{dollars}", "price-display aria-label"
+        # Fallback: just parse text of the block
+        m = _parse_money(price_block.get_text(" ", strip=True))
+        if m:
+            return m, "price-display text"
+
+    # 2) Old PriceCard class (legacy layout)
     wrap = soup.select_one("div[class*='PriceCard_sf-price-card']")
     if wrap:
         m = _parse_money(wrap.get_text(" ", strip=True))
         if m:
             return m, "PriceCard"
+
+    # 3) GelSlab class fallback (class names contain 'price-device__price-amount')
+    amt_span = soup.select_one("[class*='price-device__price-amount']")
+    if amt_span:
+        cur_span = soup.select_one("[class*='price-device__price-currency']")
+        cur = cur_span.get_text(strip=True) if cur_span else "$"
+        m = _parse_money(amt_span.get_text(strip=True))
+        if m:
+            return f"{cur}{m.lstrip('$')}", "GelSlab class"
+
+    # 4) meta[itemprop=price]
     meta_price = soup.select_one("meta[itemprop='price']")
     if meta_price and meta_price.get("content"):
         m = _parse_money(meta_price["content"])
         if m:
             return m, "meta[itemprop=price]"
-    bodytxt = _clean(soup.get_text(" ", strip=True))
-    m = _parse_money(bodytxt)
-    if m:
-        return m, "heuristic"
+
     return None, "none"
 
 
