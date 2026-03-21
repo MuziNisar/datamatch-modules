@@ -1931,3 +1931,5 @@ def scrape_harveynorman(url: str, max_images: Optional[int] = 10, verbose: bool 
 #     print("RESULTS:")
 #     print("=" * 60)
 #     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+# mmmm
