@@ -1899,7 +1899,7 @@ def scrape_target_batch_oxylabs(
 # if __name__ == "__main__":
 #     import sys
     
-#     TEST_URL = "https://www.target.com/p/laura-ashley-4-5l-lightweight-stand-mixer-rose/-/A-93986328#lnk=sametab"
+#     TEST_URL = "https://www.target.com/p/laura-ashley-1-7l-dome-kettle/-/A-94282948?preselect=93986339#lnk=sametab"
     
 #     color_arg = sys.argv[1] if len(sys.argv) > 1 else None
     

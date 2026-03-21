@@ -452,7 +452,7 @@ def scrape_amazon_product(url: str, *, headless: bool = False, country_code: str
 #     if len(sys.argv) > 1:
 #         TEST_URL = sys.argv[1]
 #     else:
-#         TEST_URL = "https://www.amazon.com/Laura-Ashley-Stainless-Electric-Kettle/dp/B0DJH88LB1?ref_=ast_sto_dp&th=1&psc=1"
+#         TEST_URL = "https://www.amazon.com/Laura-Ashley-Stainless-Electric-Kettle/dp/B0DPLM3KN5?ref_=ast_sto_dp&th=1"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")

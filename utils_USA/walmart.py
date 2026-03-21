@@ -1556,7 +1556,7 @@ def scrape_walmart_via_oxylabs(
 
 # # ========= CLI =========
 # if __name__ == "__main__":
-#     TEST_URL = "https://www.walmart.com/ip/VQ-Laura-Ashley-SS-1-7L-Dome-Kettle-China-Rose/5961729761?classType=REGULAR&from=/search"
+#     TEST_URL = "https://www.walmart.com/ip/VQ-Laura-Ashley-25-000-rpm-Portable-Smoothie-Maker-Elveden-Navy/15384119038?classType=VARIANT&from=/search"
 #     data = scrape_walmart_via_oxylabs(
 #         TEST_URL,
 #         save_dir=SAVE_DIR,
