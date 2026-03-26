@@ -1033,7 +1033,7 @@ def scrape_next_with_oxylabs(url: str,
 #         TEST_URL = sys.argv[1]
 #     else:
 #         # Test with an invalid/redirected URL
-#         TEST_URL = "https://www.next.co.uk/style/su067980/c94444#c94444"
+#         TEST_URL = "https://www.next.co.uk/style/su858791/v04174"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")

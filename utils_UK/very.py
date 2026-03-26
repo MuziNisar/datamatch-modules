@@ -1075,7 +1075,7 @@ def scrape_very_product(url: str, save_dir: Path = SAVE_DIR, verbose: bool = Tru
 #     if len(sys.argv) > 1:
 #         TEST_URL = sys.argv[1]
 #     else:
-#         TEST_URL = "https://www.very.co.uk/laura-ashley-china-rose-17l-kettle/1601066433.prd"
+#         TEST_URL = "https://www.very.co.uk/laura-ashley-china-rose-17l-jug-kettle/1601066303.prd"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")

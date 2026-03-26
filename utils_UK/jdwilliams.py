@@ -111,7 +111,7 @@ def _is_valid_image(data: bytes) -> bool:
 # ---------------------------
 # Oxylabs universal (rendered HTML) with RETRY LOGIC
 # ---------------------------
-def _oxylabs_universal_html(url: str, country: str = "United Kingdom", timeout: int = 75, verbose: bool = False) -> str:
+def _oxylabs_universal_html(url: str, country: str = "GB", timeout: int = 75, verbose: bool = False) -> str:
     """
     Fetch HTML via Oxylabs with retry logic for 204/400 errors.
     
@@ -133,13 +133,11 @@ def _oxylabs_universal_html(url: str, country: str = "United Kingdom", timeout: 
             "source": "universal",
             "url": url,
             "geo_location": country,
-            "render": "html",
-            "user_agent_type": "desktop",
-            "headers": {"User-Agent": _ua()},
+            # No render — Akamai blocks headless browser (613). Raw mobile request returns 289KB.
+            "user_agent_type": "mobile",
             "context": [
                 {"key": "session_id", "value": session_id}
             ],
-            "rendering_wait": 3000,  # 3 seconds
         }
         
         if verbose:
@@ -154,16 +152,23 @@ def _oxylabs_universal_html(url: str, country: str = "United Kingdom", timeout: 
                 data = r.json()
                 try:
                     html = data["results"][0]["content"]
-                    if html and len(html) > 500:
+                    # Check Oxylabs internal status code (613 = blocked by target server)
+                    oxy_status = data["results"][0].get("status_code")
+                    if oxy_status == 613:
+                        if verbose:
+                            print(f"  ⚠ Akamai blocked (613), retrying...")
+                        last_err = RuntimeError("BLOCKED:Oxylabs status 613 — Akamai block")
+                        time.sleep(3 + attempt * 2)
+                        continue
+                    if html and len(html) > 5000:
                         if verbose:
                             print(f"  ✓ Fetched {len(html):,} bytes")
                         return html
-                    else:
-                        if verbose:
-                            print(f"  ⚠ Empty/short content, retrying...")
-                        last_err = RuntimeError("Empty content from Oxylabs")
-                        time.sleep(2)
-                        continue
+                    if verbose:
+                        print(f"  ⚠ Short content ({len(html)} bytes), retrying...")
+                    last_err = RuntimeError("Empty content from Oxylabs")
+                    time.sleep(2)
+                    continue
                 except (KeyError, IndexError):
                     last_err = RuntimeError(f"Oxylabs response missing content: {data}")
                     time.sleep(2)
@@ -642,7 +647,7 @@ def fetch_jdw_product_with_oxylabs(url: str, verbose: bool = True) -> Dict[str, 
     
     # Try to fetch HTML with retry logic
     try:
-        html = _oxylabs_universal_html(url, country="United Kingdom", timeout=75, verbose=verbose)
+        html = _oxylabs_universal_html(url, timeout=120, verbose=verbose)
     except RuntimeError as e:
         err_str = str(e)
         
@@ -745,7 +750,7 @@ def fetch_jdw_product_with_oxylabs(url: str, verbose: bool = True) -> Dict[str, 
 #     if len(sys.argv) > 1:
 #         TEST_URL = sys.argv[1]
 #     else:
-#         TEST_URL = "https://www.jdwilliams.co.uk/shop/p/mp129"
+#         TEST_URL = "https://www.jdwilliams.co.uk/shop/p/qc652"
     
 #     print(f"\n{'='*60}")
 #     print(f"Testing: {TEST_URL}")
