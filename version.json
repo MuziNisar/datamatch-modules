@@ -1,7 +1,7 @@
 {
-  "version": "1.0.7",
-  "release_date": "2026-03-26",
-  "changelog": "Fixed JD Williams, Next & Very",
+  "version": "1.0.8",
+  "release_date": "2026-04-17",
+  "changelog": "general fix",
   "modules": {
     "utils_UK/ao.py": "c8d3a26602f519ddcc4f34323fd4b951",
     "utils_UK/argos.py": "aa30aea1ff2fd38e675a2bfbeaa2cecb",
